@@ -35,13 +35,42 @@ function toRelative(fullPath, rootPath) {
   return fullPath;
 }
 
+const ISLAND_WINDOW_SIZES = {
+  idle: { width: 250, height: 68 },
+  active: { width: 440, height: 106 },
+  palette: { width: 530, height: 450 },
+  inspector: { width: 660, height: 470 },
+};
+
+function resizeTauriWindow(state) {
+  if (typeof invoke !== "function") return;
+  const dims = ISLAND_WINDOW_SIZES[state] ?? ISLAND_WINDOW_SIZES.palette;
+  void invoke("resize_island", dims);
+}
+
 function setIslandState(state) {
   const island = document.getElementById("island");
+  const prevState = island.dataset.state;
+  const isShrinking = state === "idle" && prevState !== "idle";
+
+  if (!isShrinking) {
+    resizeTauriWindow(state);
+  }
+
   island.className = `island state-${state}`;
   island.dataset.state = state;
 
+  if (isShrinking) {
+    // Tunggu animasi CSS morph mengecil selesai dulu sebelum menyusutkan jendela Tauri
+    setTimeout(() => {
+      if (document.getElementById("island")?.dataset.state === "idle") {
+        resizeTauriWindow("idle");
+      }
+    }, 280);
+  }
+
   if (state === "palette") {
-    setTimeout(() => document.getElementById("palette-input")?.focus(), 80);
+    setTimeout(() => document.getElementById("palette-input")?.focus(), 90);
   }
 }
 
@@ -83,17 +112,18 @@ async function refreshStatus() {
     const count = filesRes.matches?.length ?? 0;
 
     document.getElementById("idle-file-count").textContent = String(count);
-    document.getElementById("chip-file-count").textContent = `${count} files`;
-    document.getElementById("palette-sandbox-path").textContent = `SANDBOX: ${status.primarySandbox}`;
+    document.getElementById("chip-file-count").textContent = `${count}`;
+    const sandboxPathEl = document.getElementById("palette-sandbox-path");
+    if (sandboxPathEl) sandboxPathEl.textContent = `SANDBOX: ${status.primarySandbox}`;
     document.getElementById("inspector-sandbox").textContent = `TARGET SANDBOX: ${status.primarySandbox}`;
 
     const modelLabel = document.getElementById("palette-model-status");
     const idleLabel = document.getElementById("idle-label");
     if (status.modelReady) {
-      modelLabel.textContent = "QWEN 0.5B READY";
+      modelLabel.textContent = "QWEN 0.5B";
       idleLabel.textContent = "AI Ready";
     } else {
-      modelLabel.textContent = "MODEL NOT DOWNLOADED";
+      modelLabel.textContent = "NO MODEL";
       idleLabel.textContent = "Setup Model";
     }
   } catch (err) {
@@ -129,6 +159,21 @@ function appendPaletteMessage(role, text, files = null) {
       )
       .join("");
     div.appendChild(list);
+  } else if (role === "assistant" && text.length > 24) {
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "msg-copy-btn mono";
+    copyBtn.textContent = "Salin";
+    copyBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(text.replace(/\*\*([^*]+)\*\*/g, "$1"));
+        copyBtn.textContent = "Tersalin ✓";
+        setTimeout(() => (copyBtn.textContent = "Salin"), 1600);
+      } catch {
+        showToast("Gagal menyalin ke clipboard.", "err");
+      }
+    });
+    div.appendChild(copyBtn);
   }
 
   stream.appendChild(div);
@@ -335,12 +380,43 @@ async function runSummarizeClipboard() {
   try {
     const clipText = (await navigator.clipboard.readText()).trim();
     if (!clipText) {
-      showToast("Clipboard kosong. Salin teks dulu lalu klik Summarize Clipboard.", "err");
+      showToast("Clipboard kosong. Salin teks dulu lalu klik Ringkas Clipboard.", "err");
       return;
     }
-    await handleChatPrompt(`Ringkas teks ini menjadi 3 poin singkat:\n\n${clipText.slice(0, 1200)}`);
-  } catch {
-    showToast("Izin clipboard ditolak — tempel teks langsung di kolom Ask AI.", "err");
+    showActiveCapsule('"Meringkas Clipboard (TL;DR)..."', "Qwen2.5-0.5B • Maks 1.500 kata");
+    const res = await rpc("quickTldr", { text: clipText });
+    const note = res.truncated ? ` _(dipotong ke 1.500 kata pertama)_` : "";
+    appendPaletteMessage("assistant", `**Ringkasan Clipboard (${res.wordCount} kata)${note}:**\n${res.summary}`);
+    setIslandState("palette");
+  } catch (err) {
+    showToast(`Gagal meringkas clipboard: ${err}`, "err");
+    setIslandState("palette");
+  }
+}
+
+async function runFormatPdfClipboard() {
+  try {
+    const clipText = (await navigator.clipboard.readText()).trim();
+    if (!clipText) {
+      showToast("Clipboard kosong. Salin teks PDF yang terpotong dulu.", "err");
+      return;
+    }
+    const res = await rpc("formatClipboard", { text: clipText });
+    await navigator.clipboard.writeText(res.formatted);
+    appendPaletteMessage("assistant", `**Teks PDF dirapikan & otomatis disalin ke clipboard:**\n${res.formatted.slice(0, 420)}${res.formatted.length > 420 ? "..." : ""}`);
+    showToast("Teks PDF rapi & sudah disalin ke clipboard!", "ok");
+    setIslandState("palette");
+  } catch (err) {
+    showToast(`Gagal merapikan clipboard: ${err}`, "err");
+  }
+}
+
+async function runOpenSandboxFolder() {
+  try {
+    const res = await rpc("safeCommand", { command: "OPEN_SANDBOX" });
+    showToast(res.message.replace(/`/g, ""), "ok");
+  } catch (err) {
+    showToast(`Gagal membuka folder: ${err}`, "err");
   }
 }
 
@@ -448,8 +524,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("chip-organize").addEventListener("click", () => void runQuickOrganize());
   document.getElementById("chip-clipboard").addEventListener("click", () => void runSummarizeClipboard());
+  document.getElementById("chip-format-pdf")?.addEventListener("click", () => void runFormatPdfClipboard());
   document.getElementById("chip-hygiene").addEventListener("click", () => void runQuickHygiene());
   document.getElementById("chip-history").addEventListener("click", () => void openHistoryInspector());
+  document.getElementById("btn-open-sandbox")?.addEventListener("click", () => void runOpenSandboxFolder());
+  document.getElementById("handle-palette")?.addEventListener("click", () => setIslandState("idle"));
+
+  // Klik area transparan di luar kapsul -> otomatis mengecil ke Idle Notch
+  document.querySelector(".stage")?.addEventListener("click", (e) => {
+    if (e.target === e.currentTarget && document.getElementById("island")?.dataset.state !== "idle") {
+      setIslandState("idle");
+    }
+  });
 
   // State 4 Controls
   document.getElementById("btn-inspector-dismiss").addEventListener("click", () => setIslandState("palette"));

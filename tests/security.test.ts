@@ -12,6 +12,11 @@ import {
 import { IntegrityViolationError, SafeExecutor } from "../src/core/security/safe-executor.js";
 import { AiFileSuggestionSchema } from "../src/core/security/schemas.js";
 import { scanHygieneIssues } from "../src/modules/file-manager/hygiene-detector.js";
+import {
+  formatBrokenPdfClipboard,
+  SafePresetCommandSchema,
+  truncateToMaxWords,
+} from "../src/modules/micro-assistant/index.js";
 
 describe("P0 Security Architecture - Unit Tests", () => {
   let tempRoot: string;
@@ -279,6 +284,26 @@ describe("P0 Security Architecture - Unit Tests", () => {
       expect(inner).not.toContain("</DOCUMENT_DATA>");
       expect(inner).not.toContain("<DOCUMENT_DATA>");
       expect(inner).toContain("[FILTERED_TAG]");
+    });
+  });
+
+  describe("6. Fase 2 Micro-Assistant Security (Safe Command Allowlist & Clipboard)", () => {
+    it("menolak perintah shell bebas pada SafePresetCommandSchema", () => {
+      expect(SafePresetCommandSchema.safeParse("rm -rf /").success).toBe(false);
+      expect(SafePresetCommandSchema.safeParse("cmd /c del *.*").success).toBe(false);
+      expect(SafePresetCommandSchema.safeParse("OPEN_SANDBOX").success).toBe(true);
+    });
+
+    it("merapikan teks PDF terpotong baris & membatasi Quick TL;DR maksimal 1.500 kata", () => {
+      const broken = "Ini adalah pemro-\ngramman sistem\nyang sangat aman.\n\nParagraf kedua\nlanjutan.";
+      expect(formatBrokenPdfClipboard(broken)).toBe(
+        "Ini adalah pemrogramman sistem yang sangat aman.\n\nParagraf kedua lanjutan."
+      );
+
+      const longText = Array.from({ length: 1800 }, (_, i) => `kata${i}`).join(" ");
+      const capped = truncateToMaxWords(longText);
+      expect(capped.truncated).toBe(true);
+      expect(capped.text.split(" ")).toHaveLength(1500);
     });
   });
 });

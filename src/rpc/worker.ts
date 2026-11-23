@@ -11,6 +11,13 @@ import type { ExecutionPlan } from "../core/security/schemas.js";
 import { scanHygieneIssues } from "../modules/file-manager/hygiene-detector.js";
 import { runLocalNaturalSearch } from "../modules/file-manager/local-search.js";
 import { buildOrganizePlan } from "../modules/file-manager/orchestrator.js";
+import {
+  executeSafePresetCommand,
+  formatBrokenPdfClipboard,
+  matchSafePresetCommand,
+  runQuickTldr,
+  SafePresetCommandSchema,
+} from "../modules/micro-assistant/index.js";
 
 const RpcRequestSchema = z
   .object({
@@ -25,6 +32,9 @@ const RpcRequestSchema = z
       "getHistory",
       "rollback",
       "setupModel",
+      "quickTldr",
+      "formatClipboard",
+      "safeCommand",
     ]),
     params: z.record(z.unknown()).default({}),
   })
@@ -71,6 +81,24 @@ const SearchParamsSchema = z
 const RollbackParamsSchema = z
   .object({
     transactionId: z.string().min(1),
+  })
+  .strict();
+
+const QuickTldrParamsSchema = z
+  .object({
+    text: z.string().min(1).max(25_000),
+  })
+  .strict();
+
+const FormatClipboardParamsSchema = z
+  .object({
+    text: z.string().min(1).max(25_000),
+  })
+  .strict();
+
+const SafeCommandParamsSchema = z
+  .object({
+    command: SafePresetCommandSchema,
   })
   .strict();
 
@@ -248,6 +276,26 @@ export class AiKuRpcWorker {
         const modelPath = await ensureModelDownloaded(this.config.llm);
         return { modelReady: true, modelPath };
       }
+
+      case "quickTldr": {
+        const parsed = QuickTldrParamsSchema.parse(params);
+        return runQuickTldr(parsed.text, this.llmEngine);
+      }
+
+      case "formatClipboard": {
+        const parsed = FormatClipboardParamsSchema.parse(params);
+        return { formatted: formatBrokenPdfClipboard(parsed.text) };
+      }
+
+      case "safeCommand": {
+        const parsed = SafeCommandParamsSchema.parse(params);
+        return executeSafePresetCommand({
+          command: parsed.command,
+          sandboxRoot: primarySandbox,
+          quarantineDirName: this.config.quarantineDirName,
+          pathGuard: this.safeExecutor.getPathGuard(),
+        });
+      }
     }
   }
 
@@ -256,6 +304,21 @@ export class AiKuRpcWorker {
     primarySandbox: string
   ): Promise<unknown> {
     const lower = input.message.toLowerCase().trim();
+
+    // 0. Intent: Safe Command Launcher (preset aman ter-hardcode, bukan shell bebas)
+    const matchedPreset = matchSafePresetCommand(input.message);
+    if (matchedPreset !== null) {
+      const cmdResult = await executeSafePresetCommand({
+        command: matchedPreset,
+        sandboxRoot: primarySandbox,
+        quarantineDirName: this.config.quarantineDirName,
+        pathGuard: this.safeExecutor.getPathGuard(),
+      });
+      return {
+        reply: cmdResult.message,
+        attachment: null,
+      };
+    }
 
     // 1. Intent: Rapikan / Organize file (wajib Dry-Run preview dulu)
     if (/\b(rapikan|rapihin|organize|organisir|kelompokkan|beresin|bereskan)\b/.test(lower)) {
@@ -313,7 +376,7 @@ export class AiKuRpcWorker {
 
     // 4. Intent: Daftar isi file / cari file di sandbox
     if (
-      /\b(ada\s+file\s+apa|isi\s+sandbox|isi\s+folder|daftar\s+file|list\s+file|lihat\s+file|semua\s+file)\b/.test(
+      /\b(ada\s+(file\s+)?apa\s*(aja|saja)?|isinya\s+apa|apa\s+(aja|saja)\s+isinya|isi\s+sandbox|isi\s+folder|daftar\s+file|list\s+file|lihat\s+file|semua\s+file)\b/.test(
         lower
       ) ||
       /\b(cari|carikan|temukan)\b/.test(lower)
@@ -379,6 +442,15 @@ export class AiKuRpcWorker {
 }
 
 async function runStdioServer(): Promise<void> {
+  // Redirect console.log/info/warn ke stderr agar stdout 100% steril hanya untuk NDJSON JSON-RPC
+  const rawStdoutWrite = stdout.write.bind(stdout);
+  const redirectToStderr = (...args: unknown[]): void => {
+    process.stderr.write(`${args.map(String).join(" ")}\n`);
+  };
+  console.log = redirectToStderr;
+  console.info = redirectToStderr;
+  console.warn = redirectToStderr;
+
   const { config } = await loadOrCreateConfig();
   const worker = new AiKuRpcWorker(config);
 
@@ -394,7 +466,7 @@ async function runStdioServer(): Promise<void> {
       return;
     }
     void worker.handleRequest(trimmed).then((response) => {
-      stdout.write(`${JSON.stringify(response)}\n`);
+      rawStdoutWrite(`${JSON.stringify(response)}\n`);
     });
   });
 }

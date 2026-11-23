@@ -6,6 +6,7 @@ logs/
 sandbox/
 test-sandbox/
 aiku.config.json
+aiku-desktop.exe
 desktop/src-tauri/target/
 .env
 .env.*

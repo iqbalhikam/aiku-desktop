@@ -3,6 +3,7 @@ import {
   LlamaChatSession,
   type LlamaContext,
   LlamaGrammar,
+  LlamaLogLevel,
   type LlamaModel,
 } from "node-llama-cpp";
 import type { LlmConfig } from "../../config/schema.js";
@@ -132,26 +133,24 @@ export class LocalLlamaEngine implements LlmInferenceClient {
     sandboxContextSummary: string;
   }): Promise<string> {
     const systemPrompt = [
-      "Kamu adalah aiKu, asisten desktop lokal yang ramah, ringkas, dan berbicara dalam Bahasa Indonesia yang santai namun sopan.",
-      "Kamu berjalan 100% offline di CPU lokal menggunakan Qwen2.5-0.5B-Instruct.",
-      "ATURAN KEAMANAN: Kamu tidak memiliki akses shell atau hapus file permanen. Jika pengguna ingin merapikan file atau cek duplikat, arahkan mereka untuk meminta 'rapikan file' atau 'cek duplikat' agar sistem menampilkan preview Dry-Run terlebih dahulu.",
-      `Informasi sandbox saat ini (hanya baca): ${input.sandboxContextSummary}`,
-      "Jawab secara singkat, jelas, dan langsung ke inti.",
+      "Kamu adalah aiKu, asisten desktop lokal yang ramah dan ringkas dalam Bahasa Indonesia.",
+      "Kamu berjalan 100% offline di CPU lokal. Jangan mengulang atau menyalin pesan pengguna.",
+      `Konteks folder sandbox saat ini: ${input.sandboxContextSummary}`,
+      "Jawab langsung pertanyaan pengguna dengan jelas dan singkat.",
     ].join("\n");
 
-    const recentHistory = input.history
-      .slice(-6)
-      .map((turn) => `${turn.role === "user" ? "Pengguna" : "aiKu"}: ${turn.content.slice(0, 300)}`)
-      .join("\n");
-
-    const userPrompt = recentHistory
-      ? `Riwayat singkat percakapan:\n${recentHistory}\n\nPesan terbaru pengguna:\n${input.message.slice(0, 1500)}`
-      : input.message.slice(0, 1500);
+    // Hapus pesan terakhir di history jika identik dengan input.message (mencegah duplikasi)
+    const cleanHistory = input.history.slice(-6);
+    const lastTurn = cleanHistory[cleanHistory.length - 1];
+    if (lastTurn && lastTurn.role === "user" && lastTurn.content.trim() === input.message.trim()) {
+      cleanHistory.pop();
+    }
 
     return this.runOnDemandInference({
       systemPrompt,
-      userPrompt,
-      maxTokens: 320,
+      userPrompt: input.message.slice(0, 1500),
+      history: cleanHistory,
+      maxTokens: 280,
     });
   }
 
@@ -165,13 +164,14 @@ export class LocalLlamaEngine implements LlmInferenceClient {
   private async runOnDemandInference(params: {
     systemPrompt: string;
     userPrompt: string;
+    history?: readonly ChatHistoryTurn[];
     grammarText?: string;
     maxTokens: number;
   }): Promise<string> {
     const modelPath = await ensureModelDownloaded(this.llmConfig, this.onDownloadProgress);
     const effectiveThreads = Math.min(Math.max(1, this.llmConfig.threads), MAX_ALLOWED_CPU_THREADS);
 
-    const llama = await getLlama({ gpu: false });
+    const llama = await getLlama({ gpu: false, logLevel: LlamaLogLevel.disabled });
     let model: LlamaModel | null = null;
     let context: LlamaContext | null = null;
 
@@ -194,6 +194,18 @@ export class LocalLlamaEngine implements LlmInferenceClient {
         contextSequence: context.getSequence(),
         systemPrompt: params.systemPrompt,
       });
+
+      if (params.history && params.history.length > 0) {
+        const chatHistory = [
+          { type: "system" as const, text: params.systemPrompt },
+          ...params.history.map((turn) =>
+            turn.role === "user"
+              ? { type: "user" as const, text: turn.content.slice(0, 400) }
+              : { type: "model" as const, response: [turn.content.slice(0, 400)] }
+          ),
+        ];
+        session.setChatHistory(chatHistory);
+      }
 
       const response = await session.prompt(params.userPrompt, {
         ...(grammar ? { grammar } : {}),

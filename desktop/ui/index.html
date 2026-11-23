@@ -101,16 +101,8 @@
               <svg class="icon-xs text-emerald" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
               </svg>
-              <span>Organize Sandbox</span>
-              <span id="chip-file-count" class="chip-meta mono">0 files</span>
-            </button>
-
-            <button id="chip-clipboard" type="button" class="island-chip">
-              <svg class="icon-xs text-cyan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="9" y="2" width="6" height="4" rx="1" />
-                <path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2" />
-              </svg>
-              <span>Summarize Clipboard</span>
+              <span>Rapikan File</span>
+              <span id="chip-file-count" class="chip-meta mono">0</span>
             </button>
 
             <button id="chip-hygiene" type="button" class="island-chip">
@@ -118,29 +110,41 @@
                 <circle cx="11" cy="11" r="7" />
                 <path d="M21 21l-4.35-4.35" />
               </svg>
-              <span>Find Duplicates &amp; Installers</span>
+              <span>Cek Duplikat</span>
             </button>
 
-            <button id="chip-history" type="button" class="island-chip">
-              <svg class="icon-xs text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
-                <path d="M3 3v5h5M12 7v5l3 2" />
+            <button id="chip-clipboard" type="button" class="island-chip">
+              <svg class="icon-xs text-cyan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="2" width="6" height="4" rx="1" />
+                <path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2" />
               </svg>
-              <span>SHA-256 Rollback</span>
+              <span>Ringkas Clipboard</span>
+            </button>
+
+            <button id="chip-format-pdf" type="button" class="island-chip">
+              <svg class="icon-xs text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 6h16M4 12h16M4 18h10" />
+              </svg>
+              <span>Rapikan Teks PDF</span>
             </button>
           </div>
 
           <div id="palette-chat-stream" class="palette-chat-stream hidden"></div>
 
           <div class="palette-footer mono">
-            <span id="palette-sandbox-path" class="truncate">SANDBOX: ...</span>
+            <div class="footer-left">
+              <button id="btn-open-sandbox" type="button" class="footer-link" title="Buka folder sandbox di Explorer">Buka Folder</button>
+              <span class="dot-sep">•</span>
+              <button id="chip-history" type="button" class="footer-link" title="Lihat riwayat & Undo SHA-256">↺ Undo</button>
+            </div>
+            <div id="handle-palette" class="collapse-handle" title="Perkecil (Esc)"></div>
             <span class="footer-right">
               <label class="mini-toggle" title="Gunakan Qwen2.5-0.5B untuk kategorisasi dokumen (.pdf/.docx/.txt)">
                 <input type="checkbox" id="chk-ai-docs" />
                 <span>AI Docs</span>
               </label>
               <span class="dot-sep">•</span>
-              <span id="palette-model-status" class="text-emerald">OFFLINE READY</span>
+              <span id="palette-model-status" class="text-emerald">READY</span>
             </span>
           </div>
         </div>

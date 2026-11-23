@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::{LogicalPosition, Manager, State};
+use tauri::{LogicalPosition, LogicalSize, Manager, State};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -186,6 +186,26 @@ fn rpc_call(
     )
 }
 
+fn center_top_window(window: &tauri::WebviewWindow, width: f64, height: f64) {
+    let clamped_w = width.clamp(220.0, 740.0);
+    let clamped_h = height.clamp(56.0, 560.0);
+    let _ = window.set_size(LogicalSize::new(clamped_w, clamped_h));
+
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let scale = monitor.scale_factor();
+        let monitor_width = monitor.size().width as f64 / scale;
+        let x = ((monitor_width - clamped_w) / 2.0).max(0.0);
+        let _ = window.set_position(LogicalPosition::new(x, 0.0));
+    }
+}
+
+#[tauri::command]
+fn resize_island(app: tauri::AppHandle, width: f64, height: f64) {
+    if let Some(window) = app.get_webview_window("main") {
+        center_top_window(&window, width, height);
+    }
+}
+
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
@@ -201,17 +221,11 @@ fn main() {
         .manage(app_state)
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
-                if let Ok(Some(monitor)) = window.current_monitor() {
-                    let scale = monitor.scale_factor();
-                    let monitor_width = monitor.size().width as f64 / scale;
-                    let win_width = 660.0;
-                    let x = ((monitor_width - win_width) / 2.0).max(0.0);
-                    let _ = window.set_position(LogicalPosition::new(x, 0.0));
-                }
+                center_top_window(&window, 250.0, 68.0);
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![rpc_call, quit_app])
+        .invoke_handler(tauri::generate_handler![rpc_call, resize_island, quit_app])
         .run(tauri::generate_context!())
         .expect("Gagal menjalankan aplikasi desktop aiKu");
 }
