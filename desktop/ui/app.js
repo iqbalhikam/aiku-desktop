@@ -40,7 +40,9 @@ const ISLAND_WINDOW_SIZES = {
   active: { width: 440, height: 106 },
   palette: { width: 530, height: 450 },
   inspector: { width: 660, height: 470 },
+  settings: { width: 580, height: 455 },
 };
+let draftAllowedDirs = [];
 
 function resizeTauriWindow(state) {
   if (typeof invoke !== "function") return;
@@ -137,47 +139,76 @@ function showActiveCapsule(title, subtitle = "Processing • Qwen2.5-0.5B Local"
   setIslandState("active");
 }
 
-function appendPaletteMessage(role, text, files = null) {
+function appendPaletteMessage(role, text, files = null, animate = false) {
   const stream = document.getElementById("palette-chat-stream");
   stream.classList.remove("hidden");
 
   const div = document.createElement("div");
   div.className = `msg ${role === "user" ? "msg-user" : "msg-ai"}`;
-  div.innerHTML = role === "assistant" ? formatSimpleMarkdown(text) : escapeHtml(text);
 
-  if (files && files.length > 0) {
-    const list = document.createElement("div");
-    list.className = "mini-file-list";
-    list.innerHTML = files
-      .map(
-        (f) => `
-          <div class="mini-file-row mono">
-            <span class="truncate">${escapeHtml(f.relativePath)}</span>
-            <span class="text-muted">${f.sizeBytes} B</span>
-          </div>
-        `
-      )
-      .join("");
-    div.appendChild(list);
-  } else if (role === "assistant" && text.length > 24) {
-    const copyBtn = document.createElement("button");
-    copyBtn.type = "button";
-    copyBtn.className = "msg-copy-btn mono";
-    copyBtn.textContent = "Salin";
-    copyBtn.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(text.replace(/\*\*([^*]+)\*\*/g, "$1"));
-        copyBtn.textContent = "Tersalin ✓";
-        setTimeout(() => (copyBtn.textContent = "Salin"), 1600);
-      } catch {
-        showToast("Gagal menyalin ke clipboard.", "err");
-      }
-    });
-    div.appendChild(copyBtn);
-  }
+  const bodyEl = document.createElement("div");
+  div.appendChild(bodyEl);
+
+  const attachFooterExtras = () => {
+    if (files && files.length > 0) {
+      const list = document.createElement("div");
+      list.className = "mini-file-list";
+      list.innerHTML = files
+        .map(
+          (f) => `
+            <div class="mini-file-row mono">
+              <span class="truncate">${escapeHtml(f.relativePath)}</span>
+              <span class="text-muted">${f.sizeBytes} B</span>
+            </div>
+          `
+        )
+        .join("");
+      div.appendChild(list);
+    } else if (role === "assistant" && text.length > 24) {
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "msg-copy-btn mono";
+      copyBtn.textContent = "Salin";
+      copyBtn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(text.replace(/\*\*([^*]+)\*\*/g, "$1"));
+          copyBtn.textContent = "Tersalin ✓";
+          setTimeout(() => (copyBtn.textContent = "Salin"), 1600);
+        } catch {
+          showToast("Gagal menyalin ke clipboard.", "err");
+        }
+      });
+      div.appendChild(copyBtn);
+    }
+    stream.scrollTop = stream.scrollHeight;
+  };
 
   stream.appendChild(div);
-  stream.scrollTop = stream.scrollHeight;
+
+  if (role === "assistant" && animate) {
+    div.classList.add("typing");
+    const tokens = text.split(/(\s+)/);
+    let idx = 0;
+    let built = "";
+    const step = () => {
+      const chunk = tokens.slice(idx, idx + 2).join("");
+      built += chunk;
+      idx += 2;
+      bodyEl.innerHTML = `${formatSimpleMarkdown(built)}<span class="ai-caret"></span>`;
+      stream.scrollTop = stream.scrollHeight;
+      if (idx < tokens.length) {
+        setTimeout(step, 26);
+      } else {
+        bodyEl.innerHTML = formatSimpleMarkdown(text);
+        div.classList.remove("typing");
+        attachFooterExtras();
+      }
+    };
+    step();
+  } else {
+    bodyEl.innerHTML = role === "assistant" ? formatSimpleMarkdown(text) : escapeHtml(text);
+    attachFooterExtras();
+  }
 }
 
 function openInspectorWithPlan(plan, sandboxRoot, title = "Safe Dry-Run Preview") {
@@ -334,10 +365,10 @@ async function handleChatPrompt(rawMessage) {
       appendPaletteMessage("assistant", res.reply);
       await openHistoryInspector();
     } else if (res.attachment?.type === "files") {
-      appendPaletteMessage("assistant", res.reply, res.attachment.files);
+      appendPaletteMessage("assistant", res.reply, res.attachment.files, true);
       setIslandState("palette");
     } else {
-      appendPaletteMessage("assistant", res.reply);
+      appendPaletteMessage("assistant", res.reply, null, true);
       setIslandState("palette");
     }
   } catch (err) {
@@ -386,7 +417,7 @@ async function runSummarizeClipboard() {
     showActiveCapsule('"Meringkas Clipboard (TL;DR)..."', "Qwen2.5-0.5B • Maks 1.500 kata");
     const res = await rpc("quickTldr", { text: clipText });
     const note = res.truncated ? ` _(dipotong ke 1.500 kata pertama)_` : "";
-    appendPaletteMessage("assistant", `**Ringkasan Clipboard (${res.wordCount} kata)${note}:**\n${res.summary}`);
+    appendPaletteMessage("assistant", `**Ringkasan Clipboard (${res.wordCount} kata)${note}:**\n${res.summary}`, null, true);
     setIslandState("palette");
   } catch (err) {
     showToast(`Gagal meringkas clipboard: ${err}`, "err");
@@ -417,6 +448,74 @@ async function runOpenSandboxFolder() {
     showToast(res.message.replace(/`/g, ""), "ok");
   } catch (err) {
     showToast(`Gagal membuka folder: ${err}`, "err");
+  }
+}
+
+function renderSettingsDirs() {
+  const container = document.getElementById("settings-dirs-list");
+  container.innerHTML = "";
+  draftAllowedDirs.forEach((dir, idx) => {
+    const chip = document.createElement("span");
+    chip.className = "dir-chip mono";
+    chip.innerHTML = `<span>${escapeHtml(dir)}</span>`;
+    if (draftAllowedDirs.length > 1) {
+      const rm = document.createElement("button");
+      rm.type = "button";
+      rm.className = "dir-chip-remove";
+      rm.textContent = "×";
+      rm.title = "Hapus folder dari sandbox";
+      rm.addEventListener("click", () => {
+        draftAllowedDirs.splice(idx, 1);
+        renderSettingsDirs();
+      });
+      chip.appendChild(rm);
+    }
+    container.appendChild(chip);
+  });
+}
+
+async function openSettingsPanel() {
+  try {
+    const status = await rpc("getStatus");
+    draftAllowedDirs = [...status.allowedDirectories];
+    renderSettingsDirs();
+    document.getElementById("settings-categories").value = status.categories.join(", ");
+    document.getElementById("settings-days").value = String(status.oldInstallerDays);
+    document.getElementById("settings-threads").value = String(status.threads);
+    setIslandState("settings");
+  } catch (err) {
+    showToast(`Gagal memuat pengaturan: ${err}`, "err");
+  }
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  const saveBtn = document.getElementById("btn-settings-save");
+  const categories = document
+    .getElementById("settings-categories")
+    .value.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const oldInstallerDays = Number.parseInt(document.getElementById("settings-days").value, 10);
+  const threads = Number.parseInt(document.getElementById("settings-threads").value, 10);
+
+  saveBtn.disabled = true;
+  saveBtn.textContent = "Menyimpan...";
+  try {
+    await rpc("updateConfig", {
+      allowedDirectories: draftAllowedDirs,
+      categories,
+      oldInstallerDays,
+      threads,
+    });
+    showToast("Pengaturan tersimpan & langsung aktif!", "ok");
+    await refreshStatus();
+    setIslandState("palette");
+  } catch (err) {
+    showToast(`Pengaturan ditolak: ${err}`, "err");
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = "Simpan Pengaturan";
   }
 }
 
@@ -528,6 +627,19 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("chip-hygiene").addEventListener("click", () => void runQuickHygiene());
   document.getElementById("chip-history").addEventListener("click", () => void openHistoryInspector());
   document.getElementById("btn-open-sandbox")?.addEventListener("click", () => void runOpenSandboxFolder());
+  document.getElementById("btn-open-settings")?.addEventListener("click", () => void openSettingsPanel());
+  document.getElementById("btn-settings-back")?.addEventListener("click", () => setIslandState("palette"));
+  document.getElementById("btn-settings-cancel")?.addEventListener("click", () => setIslandState("palette"));
+  document.getElementById("settings-form")?.addEventListener("submit", (e) => void saveSettings(e));
+  document.getElementById("btn-add-dir")?.addEventListener("click", () => {
+    const input = document.getElementById("settings-new-dir");
+    const val = input.value.trim();
+    if (val && !draftAllowedDirs.includes(val)) {
+      draftAllowedDirs.push(val);
+      input.value = "";
+      renderSettingsDirs();
+    }
+  });
   document.getElementById("handle-palette")?.addEventListener("click", () => setIslandState("idle"));
 
   // Klik area transparan di luar kapsul -> otomatis mengecil ke Idle Notch

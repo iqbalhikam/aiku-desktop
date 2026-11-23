@@ -136,6 +136,8 @@
               <button id="btn-open-sandbox" type="button" class="footer-link" title="Buka folder sandbox di Explorer">Buka Folder</button>
               <span class="dot-sep">•</span>
               <button id="chip-history" type="button" class="footer-link" title="Lihat riwayat & Undo SHA-256">↺ Undo</button>
+              <span class="dot-sep">•</span>
+              <button id="btn-open-settings" type="button" class="footer-link" title="Pengaturan Sandbox & AI">⚙ Pengaturan</button>
             </div>
             <div id="handle-palette" class="collapse-handle" title="Perkecil (Esc)"></div>
             <span class="footer-right">
@@ -199,6 +201,63 @@
               </button>
             </div>
           </div>
+        </div>
+
+        <!-- ========================================
+             STATE 5: PENGATURAN (SANDBOX & AI)
+             ======================================== -->
+        <div id="view-settings" class="view view-settings">
+          <div class="settings-header">
+            <div class="settings-title-row">
+              <button id="btn-settings-back" type="button" class="icon-btn-cyan" title="Kembali">
+                <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+              </button>
+              <span class="inspector-heading">Pengaturan aiKu</span>
+            </div>
+            <span class="security-pill mono">
+              <span class="status-dot dot-emerald"></span>
+              <span>STRICT SANDBOX</span>
+            </span>
+          </div>
+
+          <form id="settings-form" class="settings-body">
+            <div class="field-group">
+              <label class="field-label mono">Folder Sandbox Diizinkan</label>
+              <div id="settings-dirs-list" class="dir-chips"></div>
+              <div class="add-dir-row">
+                <input id="settings-new-dir" type="text" placeholder="Tambah path folder aman (mis. D:\Dokumen\Tes)" />
+                <button id="btn-add-dir" type="button" class="island-chip">+ Tambah</button>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label mono" for="settings-categories">Kategori Dokumen AI (pisahkan koma)</label>
+              <input id="settings-categories" type="text" placeholder="Keuangan, Pekerjaan, Kuliah, Pribadi, Dokumen_Umum" required />
+            </div>
+
+            <div class="field-grid">
+              <div class="field-group">
+                <label class="field-label mono" for="settings-days">Batas Installer Lama (hari)</label>
+                <input id="settings-days" type="number" min="1" max="3650" value="30" required />
+              </div>
+              <div class="field-group">
+                <label class="field-label mono" for="settings-threads">CPU Threads AI (maks 4)</label>
+                <select id="settings-threads">
+                  <option value="1">1 Thread (Super Hemat)</option>
+                  <option value="2">2 Threads (Seimbang)</option>
+                  <option value="3">3 Threads</option>
+                  <option value="4" selected>4 Threads (Maksimal)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="settings-footer">
+              <button id="btn-settings-cancel" type="button" class="btn-text">Batal</button>
+              <button id="btn-settings-save" type="submit" class="btn-apply">Simpan Pengaturan</button>
+            </div>
+          </form>
         </div>
       </div>
 

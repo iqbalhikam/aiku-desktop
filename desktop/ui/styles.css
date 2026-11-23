@@ -184,6 +184,13 @@ body {
   box-shadow: 0 24px 54px rgba(0, 0, 0, 0.9), 0 0 24px rgba(22, 249, 159, 0.12);
 }
 
+.island.state-settings {
+  width: 540px;
+  border-radius: 0 0 24px 24px;
+  border-color: rgba(0, 242, 254, 0.28);
+  box-shadow: 0 24px 54px rgba(0, 0, 0, 0.9), 0 0 22px rgba(0, 242, 254, 0.1);
+}
+
 /* Visibility switching per state */
 .view {
   display: none;
@@ -199,6 +206,9 @@ body {
   display: flex;
 }
 .island.state-inspector .view-inspector {
+  display: flex;
+}
+.island.state-settings .view-settings {
   display: flex;
 }
 
@@ -917,4 +927,152 @@ body {
 
 .hidden {
   display: none !important;
+}
+
+/* =========================================
+   AI RESPONSE TYPEWRITER & SHIMMER GLOW
+   ========================================= */
+.msg-ai.typing {
+  border-color: rgba(0, 242, 254, 0.45);
+  box-shadow: 0 0 18px rgba(0, 242, 254, 0.14), inset 0 0 14px rgba(104, 7, 186, 0.1);
+  transition: border-color 0.4s ease, box-shadow 0.4s ease;
+}
+
+.ai-caret {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--cyan), var(--emerald));
+  box-shadow: 0 0 8px var(--cyan);
+  animation: caretBlink 0.65s ease-in-out infinite;
+}
+
+@keyframes caretBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
+/* =========================================
+   STATE 5: PENGATURAN PANEL
+   ========================================= */
+.view-settings {
+  flex-direction: column;
+  padding: 16px;
+  gap: 12px;
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.field-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.settings-body input[type="text"],
+.settings-body input[type="number"],
+.settings-body select {
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  user-select: text;
+}
+
+.settings-body input:focus,
+.settings-body select:focus {
+  border-color: var(--cyan);
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.dir-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 68px;
+  overflow-y: auto;
+}
+
+.dir-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 9999px;
+  background: var(--surface-highest);
+  border: 1px solid var(--border-subtle);
+  font-size: 10.5px;
+  color: var(--primary);
+}
+
+.dir-chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--outline);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 12px;
+}
+
+.dir-chip-remove:hover {
+  color: var(--error);
+}
+
+.add-dir-row {
+  display: flex;
+  gap: 7px;
+}
+
+.add-dir-row input {
+  flex: 1;
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-subtle);
 }

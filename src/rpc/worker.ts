@@ -1,11 +1,13 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { stdin, stdout } from "node:process";
 import readline from "node:readline";
 import { z } from "zod";
-import { loadOrCreateConfig } from "../config/loader.js";
-import type { AppConfig } from "../config/schema.js";
+import { DEFAULT_CONFIG_FILENAME, loadOrCreateConfig } from "../config/loader.js";
+import { type AppConfig, resolveAppConfig } from "../config/schema.js";
 import { LocalLlamaEngine } from "../core/llm/llama-engine.js";
 import { ensureModelDownloaded, isModelDownloaded } from "../core/llm/model-downloader.js";
+import { PathGuard } from "../core/security/path-guard.js";
 import { SafeExecutor } from "../core/security/safe-executor.js";
 import type { ExecutionPlan } from "../core/security/schemas.js";
 import { scanHygieneIssues } from "../modules/file-manager/hygiene-detector.js";
@@ -24,6 +26,7 @@ const RpcRequestSchema = z
     id: z.union([z.string(), z.number()]),
     method: z.enum([
       "getStatus",
+      "updateConfig",
       "chat",
       "planOrganize",
       "planHygiene",
@@ -102,6 +105,15 @@ const SafeCommandParamsSchema = z
   })
   .strict();
 
+const UpdateConfigParamsSchema = z
+  .object({
+    allowedDirectories: z.array(z.string().min(1)).min(1).optional(),
+    categories: z.array(z.string().min(1).max(48)).min(1).optional(),
+    oldInstallerDays: z.number().int().min(1).max(3650).optional(),
+    threads: z.number().int().min(1).max(4).optional(),
+  })
+  .strict();
+
 interface RpcSuccessResponse {
   id: string | number;
   ok: true;
@@ -117,13 +129,15 @@ interface RpcErrorResponse {
 type RpcResponse = RpcSuccessResponse | RpcErrorResponse;
 
 export class AiKuRpcWorker {
-  private readonly config: AppConfig;
-  private readonly safeExecutor: SafeExecutor;
-  private readonly llmEngine: LocalLlamaEngine;
+  private config: AppConfig;
+  private readonly configPath: string;
+  private safeExecutor: SafeExecutor;
+  private llmEngine: LocalLlamaEngine;
   private readonly pendingPlans = new Map<string, ExecutionPlan>();
 
-  constructor(config: AppConfig) {
+  constructor(config: AppConfig, configPath: string = path.resolve(process.cwd(), DEFAULT_CONFIG_FILENAME)) {
     this.config = config;
+    this.configPath = path.resolve(configPath);
     this.safeExecutor = new SafeExecutor({
       allowedDirectories: config.allowedDirectories,
       historyLogPath: config.historyLogPath,
@@ -181,13 +195,60 @@ export class AiKuRpcWorker {
         const modelReady = await isModelDownloaded(this.config.llm);
         return {
           allowedDirectories: this.config.allowedDirectories,
-          primarySandbox,
+          primarySandbox: primarySandbox,
           quarantineDirName: this.config.quarantineDirName,
           categories: this.config.categories,
           oldInstallerDays: this.config.oldInstallerDays,
           modelReady,
           modelFileName: this.config.llm.modelFileName,
           threads: this.config.llm.threads,
+        };
+      }
+
+      case "updateConfig": {
+        const parsed = UpdateConfigParamsSchema.parse(params);
+        const nextRaw = {
+          allowedDirectories: parsed.allowedDirectories ?? this.config.allowedDirectories,
+          quarantineDirName: this.config.quarantineDirName,
+          categories: parsed.categories ?? this.config.categories,
+          oldInstallerDays: parsed.oldInstallerDays ?? this.config.oldInstallerDays,
+          historyLogPath: this.config.historyLogPath,
+          llm: {
+            ...this.config.llm,
+            threads: parsed.threads ?? this.config.llm.threads,
+          },
+        };
+
+        // Validasi ketat Zod + PathGuard (menolak folder sensitif seperti C:\Windows / .ssh / AppData)
+        const baseDir = path.dirname(this.configPath);
+        const validatedConfig = resolveAppConfig(nextRaw, baseDir);
+        new PathGuard(validatedConfig.allowedDirectories);
+
+        for (const dir of validatedConfig.allowedDirectories) {
+          await fs.mkdir(dir, { recursive: true });
+        }
+
+        const tempPath = `${this.configPath}.tmp-${process.pid}-${Date.now()}`;
+        await fs.writeFile(tempPath, JSON.stringify(validatedConfig, null, 2) + "\n", "utf8");
+        await fs.rename(tempPath, this.configPath);
+
+        this.config = validatedConfig;
+        this.safeExecutor = new SafeExecutor({
+          allowedDirectories: validatedConfig.allowedDirectories,
+          historyLogPath: validatedConfig.historyLogPath,
+          quarantineDirName: validatedConfig.quarantineDirName,
+        });
+        this.llmEngine = new LocalLlamaEngine({
+          llmConfig: validatedConfig.llm,
+        });
+        this.pendingPlans.clear();
+
+        return {
+          saved: true,
+          allowedDirectories: validatedConfig.allowedDirectories,
+          categories: validatedConfig.categories,
+          oldInstallerDays: validatedConfig.oldInstallerDays,
+          threads: validatedConfig.llm.threads,
         };
       }
 
@@ -451,8 +512,8 @@ async function runStdioServer(): Promise<void> {
   console.info = redirectToStderr;
   console.warn = redirectToStderr;
 
-  const { config } = await loadOrCreateConfig();
-  const worker = new AiKuRpcWorker(config);
+  const { config, configPath } = await loadOrCreateConfig();
+  const worker = new AiKuRpcWorker(config, configPath);
 
   const rl = readline.createInterface({
     input: stdin,
