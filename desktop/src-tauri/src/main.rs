@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, State, WindowEvent};
 
 #[cfg(target_os = "windows")]
@@ -59,6 +59,10 @@ impl NodeRpcClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+
+        if let Ok(exe_path) = std::env::current_exe() {
+            cmd.env("AIKU_TAURI_EXE", exe_path);
+        }
 
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -132,6 +136,7 @@ impl Drop for NodeRpcClient {
 
 struct AppState {
     worker: Arc<Mutex<Option<NodeRpcClient>>>,
+    hotkey_vks: Arc<Mutex<Vec<i32>>>,
     next_id: AtomicU64,
 }
 
@@ -161,7 +166,7 @@ fn resolve_project_root() -> Result<PathBuf, String> {
 }
 
 fn center_top_window(window: &tauri::WebviewWindow, width: f64, height: f64) {
-    let clamped_w = width.clamp(220.0, 680.0);
+    let clamped_w = width.clamp(220.0, 740.0);
     let clamped_h = height.clamp(44.0, 480.0);
     let _ = window.set_size(LogicalSize::new(clamped_w, clamped_h));
 
@@ -173,80 +178,134 @@ fn center_top_window(window: &tauri::WebviewWindow, width: f64, height: f64) {
     }
 }
 
-/// Global Double-Tap Ctrl listener (Windows native, 0 extra crates, 0% CPU).
-/// Mengabaikan kombinasi seperti Ctrl+C / Ctrl+V / Ctrl+Tab.
+fn parse_key_token_to_vk(token: &str) -> Option<i32> {
+    let upper = token.trim().to_uppercase();
+    match upper.as_str() {
+        "CTRL" | "CONTROL" => Some(0x11),
+        "ALT" | "MENU" => Some(0x12),
+        "SHIFT" => Some(0x10),
+        "WIN" | "META" | "SUPER" => Some(0x5B),
+        "SPACE" | "SPACEBAR" => Some(0x20),
+        "TAB" => Some(0x09),
+        "ENTER" | "RETURN" => Some(0x0D),
+        "ESC" | "ESCAPE" => Some(0x1B),
+        "BACKSPACE" => Some(0x08),
+        "INSERT" | "INS" => Some(0x2D),
+        "DELETE" | "DEL" => Some(0x2E),
+        "HOME" => Some(0x24),
+        "END" => Some(0x23),
+        "PAGEUP" | "PGUP" => Some(0x21),
+        "PAGEDOWN" | "PGDN" => Some(0x22),
+        "UP" | "ARROWUP" => Some(0x26),
+        "DOWN" | "ARROWDOWN" => Some(0x28),
+        "LEFT" | "ARROWLEFT" => Some(0x25),
+        "RIGHT" | "ARROWRIGHT" => Some(0x27),
+        "BACKQUOTE" | "`" | "TILDE" => Some(0xC0),
+        "F1" => Some(0x70),
+        "F2" => Some(0x71),
+        "F3" => Some(0x72),
+        "F4" => Some(0x73),
+        "F5" => Some(0x74),
+        "F6" => Some(0x75),
+        "F7" => Some(0x76),
+        "F8" => Some(0x77),
+        "F9" => Some(0x78),
+        "F10" => Some(0x79),
+        "F11" => Some(0x7A),
+        "F12" => Some(0x7B),
+        _ => {
+            let bytes = upper.as_bytes();
+            if bytes.len() == 1 {
+                let b = bytes[0];
+                if (b'A'..=b'Z').contains(&b) || (b'0'..=b'9').contains(&b) {
+                    return Some(b as i32);
+                }
+            }
+            None
+        }
+    }
+}
+
+fn parse_hotkey_to_vks(hotkey: &str) -> Vec<i32> {
+    let mut vks = Vec::new();
+    for part in hotkey.split('+') {
+        if let Some(vk) = parse_key_token_to_vk(part) {
+            if !vks.contains(&vk) {
+                vks.push(vk);
+            }
+            if vks.len() >= 3 {
+                break;
+            }
+        }
+    }
+    vks
+}
+
+fn load_initial_hotkey_vks() -> Vec<i32> {
+    if let Ok(root) = resolve_project_root() {
+        let cfg_path = root.join("aiku.config.json");
+        if let Ok(content) = std::fs::read_to_string(cfg_path) {
+            if let Ok(json) = serde_json::from_str::<Value>(&content) {
+                if let Some(hk) = json.get("hotkey").and_then(|v| v.as_str()) {
+                    let parsed = parse_hotkey_to_vks(hk);
+                    if !parsed.is_empty() {
+                        return parsed;
+                    }
+                }
+            }
+        }
+    }
+    // Default aman & ergonomis: Alt+Space
+    vec![0x12, 0x20]
+}
+
+/// Global Custom Hotkey listener (1–3 key combo, Windows native, 0 extra crates, ~0% CPU).
 #[cfg(target_os = "windows")]
-fn spawn_double_ctrl_listener(app_handle: tauri::AppHandle) {
+fn spawn_custom_hotkey_listener(app_handle: tauri::AppHandle, hotkey_vks: Arc<Mutex<Vec<i32>>>) {
     std::thread::spawn(move || {
-        const VK_CONTROL: i32 = 0x11;
-        let mut prev_ctrl_down = false;
-        let mut press_started: Option<Instant> = None;
-        let mut combo_used = false;
-        let mut last_clean_tap: Option<Instant> = None;
+        const MODIFIERS: [i32; 3] = [0x11, 0x12, 0x10]; // Ctrl, Alt, Shift
+        let mut was_triggered = false;
 
         loop {
             std::thread::sleep(Duration::from_millis(16));
 
-            let ctrl_down = unsafe { (GetAsyncKeyState(VK_CONTROL) as u16 & 0x8000) != 0 };
+            let current_vks: Vec<i32> = match hotkey_vks.lock() {
+                Ok(guard) => guard.clone(),
+                Err(_) => continue,
+            };
 
-            if ctrl_down {
-                if !prev_ctrl_down {
-                    press_started = Some(Instant::now());
-                    combo_used = false;
-                } else if !combo_used {
-                    // Cek apakah tombol lain ditekan bersamaan (Shift, Alt, Tab, A-Z, 0-9)
-                    let other_down = unsafe {
-                        let shift = (GetAsyncKeyState(0x10) as u16 & 0x8000) != 0;
-                        let alt = (GetAsyncKeyState(0x12) as u16 & 0x8000) != 0;
-                        let tab = (GetAsyncKeyState(0x09) as u16 & 0x8000) != 0;
-                        let mut any_alnum = false;
-                        for vk in 0x30..=0x5A {
-                            if (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 {
-                                any_alnum = true;
-                                break;
-                            }
-                        }
-                        shift || alt || tab || any_alnum
-                    };
-                    if other_down {
-                        combo_used = true;
-                    }
-                }
-            } else if prev_ctrl_down {
-                // Ctrl baru saja dilepas
-                if let Some(started) = press_started {
-                    let hold_ms = started.elapsed().as_millis();
-                    if !combo_used && hold_ms <= 260 {
-                        let now = Instant::now();
-                        if let Some(prev_tap) = last_clean_tap {
-                            if now.duration_since(prev_tap).as_millis() <= 380 {
-                                // Double-Tap Ctrl terdeteksi!
-                                last_clean_tap = None;
-                                if let Some(window) = app_handle.get_webview_window("main") {
-                                    let is_visible = window.is_visible().unwrap_or(false);
-                                    if is_visible {
-                                        let _ = window.emit("island-toggle-hide", ());
-                                    } else {
-                                        center_top_window(&window, 656.0, 410.0);
-                                        let _ = window.show();
-                                        let _ = window.set_focus();
-                                        let _ = window.emit("island-summon", ());
-                                    }
-                                }
-                            } else {
-                                last_clean_tap = Some(now);
-                            }
-                        } else {
-                            last_clean_tap = Some(now);
-                        }
-                    } else {
-                        last_clean_tap = None;
-                    }
-                }
-                press_started = None;
+            if current_vks.is_empty() {
+                was_triggered = false;
+                continue;
             }
 
-            prev_ctrl_down = ctrl_down;
+            let all_pressed = current_vks
+                .iter()
+                .all(|&vk| unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 });
+
+            // Pastikan tidak ada modifier tambahan yang tidak termasuk dalam hotkey user
+            let extra_mod_down = MODIFIERS.iter().any(|&m| {
+                !current_vks.contains(&m) && unsafe { (GetAsyncKeyState(m) as u16 & 0x8000) != 0 }
+            });
+
+            if all_pressed && !extra_mod_down {
+                if !was_triggered {
+                    was_triggered = true;
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let is_visible = window.is_visible().unwrap_or(false);
+                        if is_visible {
+                            let _ = window.emit("island-toggle-hide", ());
+                        } else {
+                            center_top_window(&window, 700.0, 440.0);
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                            let _ = window.emit("island-summon", ());
+                        }
+                    }
+                }
+            } else {
+                was_triggered = false;
+            }
         }
     });
 }
@@ -300,24 +359,42 @@ fn resize_island(app: tauri::AppHandle, width: f64, height: f64) {
 }
 
 #[tauri::command]
+fn set_global_hotkey(state: State<'_, AppState>, hotkey: String) -> Result<String, String> {
+    let vks = parse_hotkey_to_vks(&hotkey);
+    if vks.is_empty() || vks.len() > 3 {
+        return Err("Hotkey harus terdiri dari 1 hingga 3 tombol yang valid.".to_string());
+    }
+    let mut guard = state
+        .hotkey_vks
+        .lock()
+        .map_err(|_| "Gagal memperbarui hotkey global.".to_string())?;
+    *guard = vks;
+    Ok(hotkey)
+}
+
+#[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
 fn main() {
+    let hotkey_vks = Arc::new(Mutex::new(load_initial_hotkey_vks()));
+    let hotkey_vks_for_thread = Arc::clone(&hotkey_vks);
+
     let app_state = AppState {
         worker: Arc::new(Mutex::new(None)),
+        hotkey_vks,
         next_id: AtomicU64::new(1),
     };
 
     tauri::Builder::default()
         .manage(app_state)
-        .setup(|app| {
+        .setup(move |app| {
             #[cfg(target_os = "windows")]
-            spawn_double_ctrl_listener(app.handle().clone());
+            spawn_custom_hotkey_listener(app.handle().clone(), hotkey_vks_for_thread);
 
             if let Some(window) = app.get_webview_window("main") {
-                center_top_window(&window, 256.0, 46.0);
+                center_top_window(&window, 426.0, 94.0);
                 let win_clone = window.clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
@@ -331,6 +408,7 @@ fn main() {
             rpc_call,
             hide_island,
             resize_island,
+            set_global_hotkey,
             quit_app
         ])
         .run(tauri::generate_context!())

@@ -13,6 +13,8 @@ export const LlmConfigSchema = z
       ),
     threads: z.number().int().min(1).max(4).default(4),
     contextSize: z.number().int().min(512).max(4096).default(2048),
+    aiMode: z.enum(["offline", "hybrid"]).default("hybrid"),
+    geminiApiKey: z.string().max(256).optional(),
   })
   .strict();
 
@@ -37,6 +39,9 @@ export const AppConfigSchema = z
       .min(1)
       .default(["Keuangan", "Pekerjaan", "Kuliah", "Pribadi", "Dokumen_Umum"]),
     oldInstallerDays: z.number().int().min(1).max(3650).default(30),
+    notifDurationSec: z.number().int().min(1).max(30).default(4),
+    autoStartOnBoot: z.boolean().default(false),
+    hotkey: z.string().trim().min(1).max(40).default("Alt+Space"),
     historyLogPath: z.string().min(1).default("./logs/history.json"),
     llm: LlmConfigSchema.default({}),
   })

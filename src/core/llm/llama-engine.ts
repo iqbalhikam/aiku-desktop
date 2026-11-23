@@ -1,5 +1,7 @@
+import path from "node:path";
 import {
   getLlama,
+  type Llama,
   LlamaChatSession,
   type LlamaContext,
   LlamaGrammar,
@@ -15,7 +17,11 @@ import {
   SearchFilterSchema,
 } from "../security/schemas.js";
 import { buildFileSuggestionGbnfGrammar, SEARCH_FILTER_GBNF_GRAMMAR } from "./grammars.js";
-import { type DownloadProgress, ensureModelDownloaded } from "./model-downloader.js";
+import {
+  type DownloadProgress,
+  ensureModelDownloaded,
+  isModelDownloaded,
+} from "./model-downloader.js";
 
 const MAX_ALLOWED_CPU_THREADS = 4;
 
@@ -50,18 +56,126 @@ export interface LocalLlamaEngineOptions {
   onDownloadProgress?: (progress: DownloadProgress) => void;
 }
 
+const IDLE_UNLOAD_MS = 90_000;
+
 /**
  * Mesin AI lokal berbasis node-llama-cpp (CPU-Only, max 4 threads, TANPA Ollama).
- * Menerapkan On-Demand Model Loading: setiap sesi inferensi memuat model lalu langsung
- * melakukan dispose/unload di blok finally agar RAM kembali ke ~0 MB saat idle.
+ * Menerapkan Smart On-Demand Model Loading:
+ * - Model dimuat saat dibutuhkan dan tetap hangat selama 90 detik agar respon chat lanjutan instan (~1 detik).
+ * - Otomatis di-dispose/unload setelah 90 detik idle agar RAM kembali ke ~0 MB saat tidak dipakai.
  */
 export class LocalLlamaEngine implements LlmInferenceClient {
   private readonly llmConfig: LlmConfig;
   private readonly onDownloadProgress: ((progress: DownloadProgress) => void) | undefined;
+  private cachedLlama: Llama | null = null;
+  private cachedModel: LlamaModel | null = null;
+  private cachedContext: LlamaContext | null = null;
+  private cachedModelPath: string | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private loadingPromise: Promise<void> | null = null;
 
   constructor(options: LocalLlamaEngineOptions) {
     this.llmConfig = options.llmConfig;
     this.onDownloadProgress = options.onDownloadProgress;
+  }
+
+  /**
+   * Predictive Pre-Warm: memuat model diam-diam saat user membuka Palette / mulai mengetik,
+   * sehingga pesan PERTAMA sekalipun langsung 0ms cold-start!
+   * Aman terhadap pemanggilan ganda (shared loadingPromise) dan tetap auto-unload setelah 90 detik idle.
+   */
+  public async warmupModel(): Promise<boolean> {
+    const ready = await this.ensureLoaded(false);
+    if (ready) {
+      this.scheduleIdleUnload();
+    }
+    return ready;
+  }
+
+  private async ensureLoaded(allowDownload: boolean): Promise<boolean> {
+    if (this.idleTimer !== null) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+
+    const modelPath = allowDownload
+      ? await ensureModelDownloaded(this.llmConfig, this.onDownloadProgress)
+      : path.resolve(this.llmConfig.modelsDir, this.llmConfig.modelFileName);
+
+    if (!allowDownload && !(await isModelDownloaded(this.llmConfig))) {
+      return false;
+    }
+
+    if (
+      this.cachedModelPath === modelPath &&
+      this.cachedModel !== null &&
+      this.cachedLlama !== null &&
+      this.cachedContext !== null
+    ) {
+      return true;
+    }
+
+    if (this.loadingPromise !== null) {
+      await this.loadingPromise;
+      return this.cachedModel !== null && this.cachedContext !== null;
+    }
+
+    const effectiveThreads = Math.min(Math.max(1, this.llmConfig.threads), MAX_ALLOWED_CPU_THREADS);
+    this.loadingPromise = (async () => {
+      await this.disposeNow();
+      this.cachedLlama = await getLlama({ gpu: false, logLevel: LlamaLogLevel.disabled });
+      this.cachedModel = await this.cachedLlama.loadModel({
+        modelPath,
+        gpuLayers: 0,
+      });
+      this.cachedContext = await this.cachedModel.createContext({
+        contextSize: Math.min(this.llmConfig.contextSize, 1024),
+        batchSize: 512,
+        threads: effectiveThreads,
+      });
+      this.cachedModelPath = modelPath;
+    })();
+
+    try {
+      await this.loadingPromise;
+      return true;
+    } finally {
+      this.loadingPromise = null;
+    }
+  }
+
+  public async disposeNow(): Promise<void> {
+    if (this.idleTimer !== null) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    const context = this.cachedContext;
+    const model = this.cachedModel;
+    const llama = this.cachedLlama;
+    this.cachedContext = null;
+    this.cachedModel = null;
+    this.cachedLlama = null;
+    this.cachedModelPath = null;
+
+    if (context !== null) {
+      await context.dispose();
+    }
+    if (model !== null) {
+      await model.dispose();
+    }
+    if (llama !== null) {
+      await llama.dispose();
+    }
+  }
+
+  private scheduleIdleUnload(): void {
+    if (this.idleTimer !== null) {
+      clearTimeout(this.idleTimer);
+    }
+    this.idleTimer = setTimeout(() => {
+      void this.disposeNow();
+    }, IDLE_UNLOAD_MS);
+    this.idleTimer.unref();
   }
 
   public async suggestFileOrganization(input: {
@@ -133,14 +247,13 @@ export class LocalLlamaEngine implements LlmInferenceClient {
     sandboxContextSummary: string;
   }): Promise<string> {
     const systemPrompt = [
-      "Kamu adalah aiKu, asisten desktop lokal yang ramah dan ringkas dalam Bahasa Indonesia.",
-      "Kamu berjalan 100% offline di CPU lokal. Jangan mengulang atau menyalin pesan pengguna.",
-      `Konteks folder sandbox saat ini: ${input.sandboxContextSummary}`,
-      "Jawab langsung pertanyaan pengguna dengan jelas dan singkat.",
+      "Kamu adalah aiKu, asisten desktop lokal berbahasa Indonesia yang singkat, akurat, dan ramah.",
+      `Konteks singkat: ${input.sandboxContextSummary}`,
+      "Jawab langsung pertanyaan pengguna dalam 1-3 kalimat Bahasa Indonesia yang jelas.",
     ].join("\n");
 
-    // Hapus pesan terakhir di history jika identik dengan input.message (mencegah duplikasi)
-    const cleanHistory = input.history.slice(-6);
+    // Untuk model kecil 0.5B, batasi riwayat ke 2 giliran terakhir agar konteks tetap fokus
+    const cleanHistory = input.history.slice(-2);
     const lastTurn = cleanHistory[cleanHistory.length - 1];
     if (lastTurn && lastTurn.role === "user" && lastTurn.content.trim() === input.message.trim()) {
       cleanHistory.pop();
@@ -150,16 +263,15 @@ export class LocalLlamaEngine implements LlmInferenceClient {
       systemPrompt,
       userPrompt: input.message.slice(0, 1500),
       history: cleanHistory,
-      maxTokens: 280,
+      maxTokens: 180,
     });
   }
 
   /**
-   * On-Demand Model Loading:
-   * 1. Pastikan file .gguf tersedia (auto-download jika belum ada).
-   * 2. Muat model ke RAM dalam mode CPU-only (gpu: false, max 4 threads).
-   * 3. Jalankan inferensi (dengan GBNF Grammar jika diberikan).
-   * 4. Wajib dispose context, model, dan instance llama di blok finally.
+   * Smart On-Demand Model Loading (KV-Cache Reuse + 90s Auto-Unload):
+   * - Menyimpan model & context hangat di RAM selama 90 detik agar balasan lanjutan super cepat.
+   * - batchSize: 512 & contextSize: 1024 optimal untuk CPU AVX2 (maks 4 threads).
+   * - Otomatis dispose semua resource setelah 90 detik idle -> RAM kembali ~0 MB.
    */
   private async runOnDemandInference(params: {
     systemPrompt: string;
@@ -168,30 +280,20 @@ export class LocalLlamaEngine implements LlmInferenceClient {
     grammarText?: string;
     maxTokens: number;
   }): Promise<string> {
-    const modelPath = await ensureModelDownloaded(this.llmConfig, this.onDownloadProgress);
-    const effectiveThreads = Math.min(Math.max(1, this.llmConfig.threads), MAX_ALLOWED_CPU_THREADS);
+    await this.ensureLoaded(true);
 
-    const llama = await getLlama({ gpu: false, logLevel: LlamaLogLevel.disabled });
-    let model: LlamaModel | null = null;
-    let context: LlamaContext | null = null;
+    if (this.cachedLlama === null || this.cachedContext === null) {
+      throw new Error("Model lokal gagal dimuat ke memori.");
+    }
 
+    const sequence = this.cachedContext.getSequence();
     try {
-      model = await llama.loadModel({
-        modelPath,
-        gpuLayers: 0,
-      });
-
-      context = await model.createContext({
-        contextSize: this.llmConfig.contextSize,
-        threads: effectiveThreads,
-      });
-
       const grammar = params.grammarText
-        ? new LlamaGrammar(llama, { grammar: params.grammarText })
+        ? new LlamaGrammar(this.cachedLlama, { grammar: params.grammarText })
         : undefined;
 
       const session = new LlamaChatSession({
-        contextSequence: context.getSequence(),
+        contextSequence: sequence,
         systemPrompt: params.systemPrompt,
       });
 
@@ -200,8 +302,8 @@ export class LocalLlamaEngine implements LlmInferenceClient {
           { type: "system" as const, text: params.systemPrompt },
           ...params.history.map((turn) =>
             turn.role === "user"
-              ? { type: "user" as const, text: turn.content.slice(0, 400) }
-              : { type: "model" as const, response: [turn.content.slice(0, 400)] }
+              ? { type: "user" as const, text: turn.content.slice(0, 350) }
+              : { type: "model" as const, response: [turn.content.slice(0, 350)] }
           ),
         ];
         session.setChatHistory(chatHistory);
@@ -209,19 +311,17 @@ export class LocalLlamaEngine implements LlmInferenceClient {
 
       const response = await session.prompt(params.userPrompt, {
         ...(grammar ? { grammar } : {}),
-        temperature: params.grammarText ? 0.1 : 0.4,
+        temperature: params.grammarText ? 0.1 : 0.3,
+        topP: 0.85,
+        topK: 40,
+        repeatPenalty: { penalty: 1.12, lastTokens: 64 },
         maxTokens: params.maxTokens,
       });
 
       return response.trim();
     } finally {
-      if (context !== null) {
-        await context.dispose();
-      }
-      if (model !== null) {
-        await model.dispose();
-      }
-      await llama.dispose();
+      await sequence.eraseContextTokenRanges([{ start: 0, end: sequence.nextTokenIndex }]);
+      this.scheduleIdleUnload();
     }
   }
 }

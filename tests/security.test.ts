@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildFileSuggestionGbnfGrammar } from "../src/core/llm/grammars.js";
+import { classifyCloudRouting } from "../src/core/llm/gemini-client.js";
 import { PathGuard, SecurityViolationError, sanitizeFileName } from "../src/core/security/path-guard.js";
 import {
   buildSafeDocumentSnippet,
@@ -13,7 +14,12 @@ import { IntegrityViolationError, SafeExecutor } from "../src/core/security/safe
 import { AiFileSuggestionSchema } from "../src/core/security/schemas.js";
 import { scanHygieneIssues } from "../src/modules/file-manager/hygiene-detector.js";
 import {
+  convertUnitExpression,
+  evaluateSafeMathExpression,
+  extractTodoChecklist,
   formatBrokenPdfClipboard,
+  generateSecurePassword,
+  QuickNotesStore,
   SafePresetCommandSchema,
   truncateToMaxWords,
 } from "../src/modules/micro-assistant/index.js";
@@ -292,6 +298,8 @@ describe("P0 Security Architecture - Unit Tests", () => {
       expect(SafePresetCommandSchema.safeParse("rm -rf /").success).toBe(false);
       expect(SafePresetCommandSchema.safeParse("cmd /c del *.*").success).toBe(false);
       expect(SafePresetCommandSchema.safeParse("OPEN_SANDBOX").success).toBe(true);
+      expect(SafePresetCommandSchema.safeParse("OPEN_NOTEPAD").success).toBe(true);
+      expect(SafePresetCommandSchema.safeParse("OPEN_SPOTIFY").success).toBe(true);
     });
 
     it("merapikan teks PDF terpotong baris & membatasi Quick TL;DR maksimal 1.500 kata", () => {
@@ -304,6 +312,38 @@ describe("P0 Security Architecture - Unit Tests", () => {
       const capped = truncateToMaxWords(longText);
       expect(capped.truncated).toBe(true);
       expect(capped.text.split(" ")).toHaveLength(1500);
+    });
+
+    it("mengekstrak daftar To-Do ke Markdown/JSON dan menyimpan Quick Notes lokal", async () => {
+      const todoRes = extractTodoChecklist("- Kirim laporan\n2. Bayar listrik\n[x] Backup data");
+      expect(todoRes.items).toHaveLength(3);
+      expect(todoRes.markdown).toContain("- [ ] Kirim laporan");
+      expect(todoRes.markdown).toContain("- [x] Backup data");
+
+      const notesStore = new QuickNotesStore(path.join(tempRoot, "logs", "notes.json"));
+      await notesStore.add("Meeting jam 10 pagi");
+      await notesStore.add("Beli kabel USB-C");
+      expect(await notesStore.readAll()).toHaveLength(2);
+      const removed = await notesStore.removeByIndex(1);
+      expect(removed?.text).toBe("Meeting jam 10 pagi");
+      expect(await notesStore.readAll()).toHaveLength(1);
+    });
+
+    it("menghitung kalkulator aman tanpa eval, konversi satuan, dan password kriptografis", () => {
+      expect(evaluateSafeMathExpression("(45 + 30) / 2")).toBe(37.5);
+      expect(evaluateSafeMathExpression("250000 * 1.11")).toBe(277500);
+      expect(evaluateSafeMathExpression("process.exit(1)")).toBeNull();
+
+      expect(convertUnitExpression("2048 MB ke GB")).toContain("2 GB");
+      expect(convertUnitExpression("100 C ke F")).toContain("212.00 °F");
+
+      const pw = generateSecurePassword(20);
+      expect(pw).toHaveLength(20);
+
+      // Hybrid routing: soal riset web & coding diarahkan ke Gemini, sapaan ringan tetap lokal
+      expect(classifyCloudRouting("cari tau soal saham BBCA di internet").enableWebSearch).toBe(true);
+      expect(classifyCloudRouting("bantu debug error TypeScript").useGemini).toBe(true);
+      expect(classifyCloudRouting("apa kabar").useGemini).toBe(false);
     });
   });
 });

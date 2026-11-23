@@ -17,36 +17,53 @@
         <!-- Dynamic Island Pure Black Shell -->
         <div id="island" class="island state-idle" data-state="idle">
           <!-- ========================================
-               STATE 1: IDLE PILL (~198 x 34px)
+               STATE 1: IDLE PILL (~220 x 36px -> Hover 390 x 82px Quick Access)
                ======================================== -->
           <div id="view-idle" class="view view-idle" role="button" tabindex="0" title="Klik untuk membuka aiKu">
-            <div class="idle-left">
-              <span class="status-dot dot-emerald pulse"></span>
-              <svg class="icon-xs text-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="4" y="6" width="16" height="12" rx="3" />
-                <circle cx="9" cy="12" r="1.2" fill="currentColor" />
-                <circle cx="15" cy="12" r="1.2" fill="currentColor" />
-                <path d="M12 2v4" />
-              </svg>
-              <span id="idle-label" class="idle-label">AI Ready</span>
+            <div class="idle-top-row">
+              <div class="idle-left">
+                <span class="status-dot dot-emerald pulse"></span>
+                <svg class="icon-xs text-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="4" y="6" width="16" height="12" rx="3" />
+                  <circle cx="9" cy="12" r="1.2" fill="currentColor" />
+                  <circle cx="15" cy="12" r="1.2" fill="currentColor" />
+                  <path d="M12 2v4" />
+                </svg>
+                <span id="idle-label" class="idle-label">AI Ready</span>
+              </div>
+              <div class="idle-right">
+                <span id="idle-file-count" class="new-pill mono">0 file</span>
+                <button id="btn-idle-mic" type="button" class="icon-btn-tiny" title="Input Suara">
+                  <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="2" width="6" height="11" rx="3" />
+                    <path d="M5 10a7 7 0 0 0 14 0M12 17v4" />
+                  </svg>
+                </button>
+              </div>
             </div>
-            <div class="idle-right">
-              <span id="idle-file-count" class="new-pill mono">0 file</span>
-              <button id="btn-idle-mic" type="button" class="icon-btn-tiny" title="Input Suara">
-                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="9" y="2" width="6" height="11" rx="3" />
-                  <path d="M5 10a7 7 0 0 0 14 0M12 17v4" />
+
+            <!-- Hover Quick Access Bar (muncul otomatis saat kursor hover di kapsul atas) -->
+            <div id="idle-hover-dock" class="idle-hover-dock">
+              <div id="hover-shortcuts-list" class="hover-shortcuts-list"></div>
+              <button
+                id="btn-customize-hover"
+                type="button"
+                class="hover-shortcut-edit"
+                title="Kustomisasi Shortcut Hover"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <path d="M12 5v14M5 12h14" />
                 </svg>
               </button>
             </div>
           </div>
 
           <!-- ========================================
-               STATE 2: ACTIVE THINKING / VOICE (~380 x 62px)
+               STATE 2: ACTIVE THINKING / VOICE / NOTIFICATION (~380 x 64px)
                ======================================== -->
           <div id="view-active" class="view view-active">
             <div class="active-row">
-              <div class="active-left">
+              <div id="active-voice-visual" class="active-left">
                 <div class="ai-orb"><span class="orb-core"></span></div>
                 <div class="waveform" aria-hidden="true">
                   <span class="bar b1"></span>
@@ -56,13 +73,19 @@
                   <span class="bar b5"></span>
                 </div>
               </div>
+              <div id="active-notif-visual" class="active-left hidden">
+                <div id="active-notif-orb" class="notif-orb ok"></div>
+              </div>
               <div class="active-center">
                 <div id="active-title" class="active-title">Memproses perintah...</div>
                 <div id="active-subtitle" class="active-sub mono">Offline Local AI • Qwen 0.5B</div>
               </div>
-              <button id="btn-active-stop" type="button" class="stop-btn" title="Kembali">
+              <button id="btn-active-stop" type="button" class="stop-btn" title="Tutup">
                 <span class="stop-square"></span>
               </button>
+            </div>
+            <div id="active-notif-track" class="active-notif-track hidden">
+              <div id="active-notif-bar" class="active-notif-bar"></div>
             </div>
             <div class="notch-grabber"></div>
           </div>
@@ -72,71 +95,237 @@
                ======================================== -->
           <div id="view-palette" class="view view-palette">
             <form id="palette-form" class="palette-input-bar">
-              <svg class="icon-sm text-cyan" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M12 2l2.1 6.4L20.5 10.5l-6.4 2.1L12 19l-2.1-6.4-6.4-2.1 6.4-2.1L12 2z" />
+              <svg class="icon-spark-grad" viewBox="0 0 24 24" aria-hidden="true">
+                <path fill="currentColor" d="M12 2.2l2.1 6.6L20.8 11l-6.7 2.2L12 19.8l-2.1-6.6L3.2 11l6.7-2.2L12 2.2z" />
               </svg>
               <input
                 id="palette-input"
                 type="text"
-                placeholder="Ask AI, search files, or summarize clipboard."
+                placeholder="Ask AI, hitung, cari file, atau ketik perintah..."
                 autocomplete="off"
               />
-              <button id="btn-palette-mic" type="button" class="icon-btn-tiny" title="Ngobrol Live (Suara)">
-                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="9" y="2" width="6" height="11" rx="3" />
+              <button id="btn-palette-mic" type="button" class="icon-btn-tiny icon-btn-mic" title="Ngobrol Live (Suara)">
+                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <rect x="9" y="2" width="6" height="11" rx="3" fill="currentColor" fill-opacity="0.22" />
                   <path d="M5 10a7 7 0 0 0 14 0M12 17v4" />
                 </svg>
               </button>
+              <button id="btn-open-inbox" type="button" class="icon-btn-tiny icon-btn-inbox" title="Inbox Notifikasi &amp; WhatsApp">
+                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+                <span id="inbox-unread-badge" class="inbox-badge hidden">0</span>
+              </button>
               <button id="btn-open-security" type="button" class="icon-btn-tiny" title="Pengaturan & Rollback">
-                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="3" />
+                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+                  <circle cx="12" cy="12" r="3" fill="currentColor" fill-opacity="0.2" />
                   <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
                 </svg>
               </button>
               <button id="btn-quit-app" type="button" class="icon-btn-tiny" title="Tutup aiKu">
-                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
                   <path d="M6 6l12 12M18 6L6 18" />
                 </svg>
               </button>
             </form>
 
-            <div class="palette-chips">
-              <button id="chip-live-voice" type="button" class="island-chip chip-live">
-                <svg class="icon-xs text-cyan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
-                  <path d="M19 10a7 7 0 0 1-14 0M12 17v4" />
-                </svg>
-                <span>Ngobrol Live</span>
+            <div class="dock-grid">
+              <button id="chip-organize" type="button" class="dock-tile">
+                <span class="tile-icon-box box-emerald">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="currentColor" fill-opacity="0.22" />
+                    <path d="M12 11v4m-2-2h4" />
+                  </svg>
+                </span>
+                <span>Rapikan</span>
               </button>
 
-              <button id="chip-organize" type="button" class="island-chip">
-                <svg class="icon-xs text-emerald" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-                </svg>
-                <span>Rapikan File</span>
+              <button id="chip-hygiene" type="button" class="dock-tile">
+                <span class="tile-icon-box box-violet">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="8" y="8" width="12" height="12" rx="2.5" fill="currentColor" fill-opacity="0.22" />
+                    <path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8" />
+                  </svg>
+                </span>
+                <span>Duplikat</span>
               </button>
 
-              <button id="chip-clipboard" type="button" class="island-chip">
-                <svg class="icon-xs text-cyan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="9" y="2" width="6" height="4" rx="1" />
-                  <path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2" />
-                </svg>
-                <span>Ringkas Clipboard</span>
+              <button id="chip-clipboard" type="button" class="dock-tile">
+                <span class="tile-icon-box box-cyan">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M6 4h8l4 4v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" fill="currentColor" fill-opacity="0.2" />
+                    <path d="M8 11h8M8 15h5" />
+                  </svg>
+                </span>
+                <span>Ringkas</span>
               </button>
 
-              <button id="chip-hygiene" type="button" class="island-chip">
-                <svg class="icon-xs text-violet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="11" cy="11" r="7" />
-                  <path d="M21 21l-4.35-4.35" />
-                </svg>
-                <span>Cek Duplikat</span>
+              <button id="chip-more-tools" type="button" class="dock-tile">
+                <span class="tile-icon-box box-slate">
+                  <svg class="bento-svg" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="4" y="4" width="6.5" height="6.5" rx="2" />
+                    <rect x="13.5" y="4" width="6.5" height="6.5" rx="2" opacity="0.65" />
+                    <rect x="4" y="13.5" width="6.5" height="6.5" rx="2" opacity="0.65" />
+                    <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="2" />
+                  </svg>
+                </span>
+                <span>Lainnya</span>
+              </button>
+            </div>
+
+            <div id="more-tools-grid" class="dock-grid dock-more hidden">
+              <button id="chip-format-pdf" type="button" class="dock-tile">
+                <span class="tile-icon-box box-amber">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+                    <path d="M4 6h16M4 11h12M4 16h16M4 20h9" />
+                  </svg>
+                </span>
+                <span>Teks PDF</span>
               </button>
 
-              <button id="chip-format-pdf" type="button" class="island-chip">
-                <svg class="icon-xs text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M4 6h16M4 12h16M4 18h10" />
+              <button id="chip-extract-todo" type="button" class="dock-tile">
+                <span class="tile-icon-box box-teal">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="4" width="18" height="16" rx="3" fill="currentColor" fill-opacity="0.2" />
+                    <path d="M8 12l2.5 2.5L16 9" />
+                  </svg>
+                </span>
+                <span>To-Do</span>
+              </button>
+
+              <button id="chip-pomodoro" type="button" class="dock-tile">
+                <span class="tile-icon-box box-blue">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="13" r="7.5" fill="currentColor" fill-opacity="0.2" />
+                    <path d="M12 9.5V13l2.5 1.8M9.5 2.5h5" />
+                  </svg>
+                </span>
+                <span id="chip-pomodoro-label">Fokus 25m</span>
+              </button>
+
+              <button id="chip-clip-history" type="button" class="dock-tile">
+                <span class="tile-icon-box box-rose">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                    <path d="M3 3v5h5M12 7.5V12l3 2" />
+                  </svg>
+                </span>
+                <span>Copy Log</span>
+              </button>
+            </div>
+
+            <!-- Now Playing Mini-Bar (muncul otomatis saat Spotify / YouTube / Media Player aktif) -->
+            <div id="media-bar" class="media-bar hidden">
+              <div class="media-info">
+                <span class="media-eq" aria-hidden="true"><span></span><span></span><span></span></span>
+                <div class="media-text">
+                  <div id="media-title" class="media-title truncate">Now Playing</div>
+                  <div id="media-artist" class="media-artist truncate">Artist</div>
+                </div>
+              </div>
+              <div class="media-controls">
+                <button id="btn-media-prev" type="button" class="icon-btn-tiny" title="Sebelumnya">
+                  <svg class="icon-xs" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" />
+                  </svg>
+                </button>
+                <button id="btn-media-toggle" type="button" class="icon-btn-tiny" title="Play / Pause">
+                  <svg class="icon-xs" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                </button>
+                <button id="btn-media-next" type="button" class="icon-btn-tiny" title="Berikutnya">
+                  <svg class="icon-xs" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- Inbox Notifikasi Windows & WhatsApp (Multi-Message Selector + Quick Reply) -->
+            <div id="inbox-panel" class="inbox-panel hidden">
+              <div class="inbox-header">
+                <div class="inbox-header-left">
+                  <span class="inbox-title">Inbox Notifikasi</span>
+                  <div class="inbox-filter-group">
+                    <button id="inbox-filter-all" type="button" class="inbox-filter-btn active mono">Semua</button>
+                    <button id="inbox-filter-wa" type="button" class="inbox-filter-btn mono">WhatsApp</button>
+                  </div>
+                </div>
+                <div class="inbox-header-right">
+                  <button id="btn-inbox-sim" type="button" class="chat-clear-btn mono" title="Simulasi pesan WhatsApp masuk">
+                    Tes WA
+                  </button>
+                  <button id="btn-inbox-close" type="button" class="chat-clear-btn mono">Tutup</button>
+                </div>
+              </div>
+
+              <div id="inbox-list" class="inbox-list"></div>
+
+              <form id="inbox-reply-box" class="inbox-reply-box hidden">
+                <div class="inbox-reply-meta mono">
+                  <span id="inbox-reply-target" class="truncate">Membalas: ...</span>
+                </div>
+                <div class="inbox-reply-row">
+                  <input
+                    id="inbox-reply-input"
+                    type="text"
+                    placeholder="Ketik balasan atau klik Draft AI..."
+                    autocomplete="off"
+                  />
+                  <button id="btn-inbox-draft" type="button" class="island-chip mono">Draft AI</button>
+                  <button id="btn-inbox-send" type="submit" class="btn-apply">Kirim WA</button>
+                </div>
+              </form>
+            </div>
+
+            <!-- Welcoming Hero Card (muncul saat belum ada percakapan aktif) -->
+            <div id="palette-welcome" class="welcome-card">
+              <div class="welcome-top">
+                <div class="welcome-title-wrap">
+                  <span class="welcome-orb" aria-hidden="true"></span>
+                  <div class="welcome-copy">
+                    <div id="welcome-greeting" class="welcome-greeting">Selamat Datang di aiKu</div>
+                    <div id="welcome-sub" class="welcome-sub">Asisten lokal aman &amp; cepat • Siap membantu</div>
+                  </div>
+                </div>
+                <span id="welcome-engine-badge" class="welcome-badge mono">Qwen 1.5B</span>
+              </div>
+              <div class="welcome-pills">
+                <button type="button" class="welcome-pill" data-prompt="Spek laptop saya dan sisa RAM sekarang">
+                  <svg class="welcome-pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="4" y="4" width="16" height="16" rx="3" />
+                    <rect x="9" y="9" width="6" height="6" rx="1" />
+                    <path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2" />
+                  </svg>
+                  <span>Spek &amp; RAM</span>
+                </button>
+                <button type="button" class="welcome-pill" data-prompt="Apa saja isi folder saya?">
+                  <svg class="welcome-pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                  </svg>
+                  <span>Isi Folder</span>
+                </button>
+                <button type="button" class="welcome-pill" data-prompt="Coba cari tahu berita teknologi AI terbaru hari ini di internet">
+                  <svg class="welcome-pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M3.6 9h16.8M3.6 15h16.8M12 3a14.5 14.5 0 0 1 0 18M12 3a14.5 14.5 0 0 0 0 18" />
+                  </svg>
+                  <span>Riset Web</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Mini Chat Toolbar (muncul saat percakapan berlangsung) -->
+            <div id="chat-toolbar" class="chat-toolbar hidden">
+              <span id="chat-engine-indicator" class="chat-engine-indicator mono">Percakapan Aktif</span>
+              <button id="btn-clear-chat" type="button" class="chat-clear-btn mono" title="Bersihkan &amp; kembali ke layar sambutan">
+                <svg class="icon-inline-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+                  <path d="M3 3v5h5" />
                 </svg>
-                <span>Rapikan PDF</span>
+                <span>Reset Chat</span>
               </button>
             </div>
 
@@ -177,7 +366,7 @@
 
             <div class="inspector-footer">
               <button id="btn-inspector-undo" type="button" class="pill-btn-muted mono">
-                ↺ Undo (SHA-256)
+                Undo History (SHA-256)
               </button>
               <div class="inspector-actions">
                 <button id="btn-inspector-cancel" type="button" class="btn-text">Cancel</button>
@@ -207,8 +396,9 @@
               </span>
             </div>
 
-            <div class="segmented-tabs">
-              <button id="seg-sandbox" type="button" class="seg-btn active">Sandbox &amp; Settings</button>
+            <div class="segmented-tabs segmented-tabs-3">
+              <button id="seg-sandbox" type="button" class="seg-btn active">Sandbox &amp; AI</button>
+              <button id="seg-shortcuts" type="button" class="seg-btn">Hover Shortcuts</button>
               <button id="seg-history" type="button" class="seg-btn">SHA-256 History</button>
             </div>
 
@@ -221,7 +411,49 @@
                 <button id="btn-open-sandbox" type="button" class="island-chip">Buka Folder</button>
               </div>
 
-              <div class="field-grid-4">
+              <div class="field-group">
+                <label class="field-label mono" for="settings-model">Model AI Lokal (.gguf)</label>
+                <div class="add-dir-row">
+                  <select id="settings-model" class="full-select"></select>
+                  <button id="btn-download-model" type="button" class="island-chip">Siap</button>
+                </div>
+                <div id="download-progress-wrap" class="dl-progress-wrap hidden">
+                  <div class="dl-progress-meta mono">
+                    <span id="dl-progress-name" class="truncate">Mengunduh...</span>
+                    <span id="dl-progress-stats">0%</span>
+                  </div>
+                  <div class="dl-progress-track">
+                    <div id="dl-progress-fill" class="dl-progress-fill"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="field-grid-3-top">
+                <div class="field-group">
+                  <label class="field-label mono" for="settings-hotkey">Hotkey (1–3 Tombol)</label>
+                  <input
+                    id="settings-hotkey"
+                    type="text"
+                    class="hotkey-recorder mono"
+                    value="Alt+Space"
+                    readonly
+                    title="Klik lalu tekan 1 sampai 3 tombol kombinasi (mis. Alt+Space, F9, Ctrl+Shift+A)"
+                  />
+                </div>
+                <div class="field-group">
+                  <label class="field-label mono" for="settings-ai-mode">Mode AI</label>
+                  <select id="settings-ai-mode" class="full-select">
+                    <option value="hybrid">Hybrid (Lokal + Gemini)</option>
+                    <option value="offline">100% Offline (Lokal)</option>
+                  </select>
+                </div>
+                <div class="field-group">
+                  <label class="field-label mono" for="settings-gemini-key">Gemini API Key (Opsional)</label>
+                  <input id="settings-gemini-key" type="password" placeholder="AIza... (kosongkan jika tidak diubah)" autocomplete="off" />
+                </div>
+              </div>
+
+              <div class="field-grid-5">
                 <div class="field-group">
                   <label class="field-label mono" for="settings-categories">Kategori AI</label>
                   <input id="settings-categories" type="text" required />
@@ -232,6 +464,10 @@
                     <option value="default">Default (Compact)</option>
                     <option value="gemini">Gemini Style</option>
                   </select>
+                </div>
+                <div class="field-group">
+                  <label class="field-label mono" for="settings-notif-duration">Notif Fase 2 (s)</label>
+                  <input id="settings-notif-duration" type="number" min="1" max="30" value="4" required />
                 </div>
                 <div class="field-group">
                   <label class="field-label mono" for="settings-days">Installer (hari)</label>
@@ -249,15 +485,117 @@
               </div>
 
               <div class="inspector-footer">
-                <label class="mini-toggle mono">
-                  <input type="checkbox" id="chk-ai-docs" />
-                  <span>AI Smart Docs (.pdf/.docx/.txt)</span>
-                </label>
-                <button id="btn-settings-save" type="submit" class="btn-apply">Simpan Pengaturan</button>
+                <div class="header-right-group">
+                  <label class="mini-toggle mono" title="Jalankan aiKu otomatis saat Windows menyala">
+                    <input type="checkbox" id="chk-autostart" />
+                    <span>Auto-Start Saat Laptop Nyala</span>
+                  </label>
+                  <label class="mini-toggle mono">
+                    <input type="checkbox" id="chk-ai-docs" />
+                    <span>AI Smart Docs</span>
+                  </label>
+                </div>
+                <div class="inspector-actions">
+                  <button id="btn-test-notif" type="button" class="island-chip mono" title="Uji animasi notifikasi Fase 2">
+                    Tes Notif Fase 2
+                  </button>
+                  <button id="btn-settings-save" type="submit" class="btn-apply">Simpan Pengaturan</button>
+                </div>
               </div>
             </form>
 
-            <!-- Sub-tab B: SHA-256 History -->
+            <!-- Sub-tab B: Custom Hover Shortcuts Manager -->
+            <div id="shortcuts-panel" class="subtab-panel">
+              <div class="sc-header-row">
+                <span class="field-label mono">Shortcut Aktif Saat Hover (Maks 5 Item)</span>
+                <button id="btn-sc-reset" type="button" class="chat-clear-btn mono">Reset Default</button>
+              </div>
+              <div id="sc-active-list" class="dir-chips"></div>
+
+              <div class="sc-builder-card">
+                <div class="field-grid-3-sc">
+                  <div class="field-group">
+                    <label class="field-label mono" for="sc-type">Kategori Aksi</label>
+                    <select id="sc-type" class="full-select">
+                      <option value="app">Aplikasi Desktop</option>
+                      <option value="web">Browser Search / Web</option>
+                      <option value="system">Fitur Sistem &amp; AI</option>
+                    </select>
+                  </div>
+
+                  <div class="field-group" id="sc-target-app-wrap">
+                    <label class="field-label mono" for="sc-target-app">Pilih Aplikasi</label>
+                    <select id="sc-target-app" class="full-select">
+                      <option value="OPEN_CHROME">Google Chrome</option>
+                      <option value="OPEN_VSCODE">VS Code</option>
+                      <option value="OPEN_SPOTIFY">Spotify</option>
+                      <option value="OPEN_EXPLORER">File Explorer</option>
+                      <option value="OPEN_NOTEPAD">Notepad</option>
+                      <option value="OPEN_CALCULATOR">Kalkulator</option>
+                      <option value="OPEN_WHATSAPP">WhatsApp</option>
+                      <option value="OPEN_YOUTUBE">YouTube</option>
+                      <option value="OPEN_WINDOWS_SETTINGS">Windows Settings</option>
+                      <option value="OPEN_TASK_MANAGER">Task Manager</option>
+                      <option value="OPEN_EDGE">Microsoft Edge</option>
+                      <option value="OPEN_PAINT">Paint</option>
+                    </select>
+                  </div>
+
+                  <div class="field-group hidden" id="sc-target-web-wrap">
+                    <label class="field-label mono" for="sc-target-web">URL atau Kata Kunci Google</label>
+                    <input
+                      id="sc-target-web"
+                      type="text"
+                      class="full-input"
+                      placeholder="Kosongkan = ketik pencarian, atau isi github.com"
+                    />
+                  </div>
+
+                  <div class="field-group hidden" id="sc-target-sys-wrap">
+                    <label class="field-label mono" for="sc-target-sys">Pilih Fitur Sistem</label>
+                    <select id="sc-target-sys" class="full-select">
+                      <option value="OPEN_SANDBOX">Buka Folder Sandbox</option>
+                      <option value="QUICK_ORGANIZE">Rapikan File (Dry-Run)</option>
+                      <option value="QUICK_HYGIENE">Cek Duplikat SHA-256</option>
+                      <option value="SUMMARIZE_CLIP">Ringkas Clipboard (TL;DR)</option>
+                      <option value="FORMAT_PDF">Rapikan Teks PDF</option>
+                      <option value="EXTRACT_TODO">Ekstrak To-Do Clipboard</option>
+                      <option value="FOCUS_TIMER">Timer Fokus 25 Menit</option>
+                      <option value="CHECK_SPECS">Cek Spek &amp; RAM Laptop</option>
+                      <option value="LIVE_VOICE">Mulai Live Voice</option>
+                    </select>
+                  </div>
+
+                  <div class="field-group">
+                    <label class="field-label mono" for="sc-icon">Ikon Vektor</label>
+                    <select id="sc-icon" class="full-select">
+                      <option value="globe">Browser / Globe</option>
+                      <option value="code">Code / Terminal</option>
+                      <option value="search">Search / Kaca Pembesar</option>
+                      <option value="folder">Folder / Explorer</option>
+                      <option value="app">Aplikasi / Window</option>
+                      <option value="music">Musik / Audio</option>
+                      <option value="spark">AI / Spark</option>
+                      <option value="clock">Timer / Jam</option>
+                      <option value="cpu">CPU / Spek</option>
+                      <option value="file">Dokumen / Teks</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="add-dir-row">
+                  <input
+                    id="sc-label"
+                    type="text"
+                    maxlength="14"
+                    placeholder="Nama tombol (maks 14 huruf, mis. Chrome)"
+                  />
+                  <button id="btn-sc-add" type="button" class="btn-apply">+ Tambah Shortcut</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Sub-tab C: SHA-256 History -->
             <div id="history-panel" class="subtab-panel">
               <div id="history-list" class="inspector-list"></div>
             </div>
@@ -272,8 +610,17 @@
         </svg>
       </div>
 
-      <!-- Floating micro toast -->
-      <div id="island-toast" class="island-toast hidden mono"></div>
+      <!-- Unified Obsidian Alert Banner -->
+      <div id="island-toast" class="island-toast hidden">
+        <div id="toast-icon" class="toast-icon"></div>
+        <div class="toast-copy">
+          <div id="toast-title" class="toast-title">Notifikasi</div>
+          <div id="toast-sub" class="toast-sub mono"></div>
+        </div>
+        <div class="toast-bar-wrap">
+          <div id="toast-bar" class="toast-bar"></div>
+        </div>
+      </div>
     </main>
 
     <script src="app.js"></script>

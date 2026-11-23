@@ -12,8 +12,8 @@
       {
         "label": "main",
         "title": "aiKu Dynamic Island",
-        "width": 256,
-        "height": 46,
+        "width": 416,
+        "height": 76,
         "resizable": false,
         "decorations": false,
         "transparent": true,
