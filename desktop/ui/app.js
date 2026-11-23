@@ -47,8 +47,23 @@ function setIslandState(state) {
   const wrapper = document.querySelector(".notch-wrapper");
   const island = document.getElementById("island");
   wrapper?.classList.remove("island-hidden");
+
+  // Besarkan jendela dulu hanya jika keluar dari Idle
+  if (state !== "idle" && island.dataset.state === "idle" && typeof invoke === "function") {
+    void invoke("resize_island", { width: 656, height: 410 });
+  }
+
   island.className = `island state-${state}`;
   island.dataset.state = state;
+
+  // Setelah animasi mengecil ke Idle selesai (280ms), susutkan jendela agar area tab kiri-kanan tetap bisa diklik
+  if (state === "idle" && typeof invoke === "function") {
+    setTimeout(() => {
+      if (document.getElementById("island")?.dataset.state === "idle") {
+        void invoke("resize_island", { width: 256, height: 46 });
+      }
+    }, 280);
+  }
 
   if (state === "palette") {
     setTimeout(() => document.getElementById("palette-input")?.focus(), 70);
@@ -485,13 +500,13 @@ function startVoiceInput() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Auto-hide saat user klik browser / aplikasi lain agar TIDAK pernah menutupi tab!
-  // Munculkan lagi kapan saja dengan tekan Ctrl 2x cepat!
+  // Klik di luar Dynamic Island -> mengecil ke State 1 (Idle Pill), TIDAK auto-hide!
+  // Tekan Ctrl 2x cepat -> Toggle Hide / Show penuh!
   if (typeof listen === "function") {
     void listen("island-blur", () => {
       const current = document.getElementById("island")?.dataset.state;
-      if (current && current !== "active") {
-        hideIslandSmoothly();
+      if (current && current !== "idle" && current !== "active") {
+        setIslandState("idle");
       }
     });
     void listen("island-toggle-hide", () => {
@@ -501,6 +516,13 @@ document.addEventListener("DOMContentLoaded", () => {
       setIslandState("palette");
     });
   }
+
+  // Klik area transparan di dalam jendela di luar kapsul -> mengecil ke Idle Pill
+  document.querySelector(".stage")?.addEventListener("click", (e) => {
+    if (e.target === e.currentTarget && document.getElementById("island")?.dataset.state !== "idle") {
+      setIslandState("idle");
+    }
+  });
 
   document.getElementById("view-idle").addEventListener("click", (e) => {
     if (e.target.closest("#btn-idle-mic")) return;
@@ -559,12 +581,14 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   ["handle-palette", "handle-inspector", "handle-security"].forEach((id) => {
-    document.getElementById(id)?.addEventListener("click", () => hideIslandSmoothly());
+    document.getElementById(id)?.addEventListener("click", () => setIslandState("idle"));
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") hideIslandSmoothly();
+    if (e.key === "Escape") setIslandState("idle");
   });
 
+  // Mulai di State 1 (Idle Pill) dengan ukuran jendela ramping
+  setIslandState("idle");
   void refreshStatus();
 });

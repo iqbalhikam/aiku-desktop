@@ -317,7 +317,7 @@ fn main() {
             spawn_double_ctrl_listener(app.handle().clone());
 
             if let Some(window) = app.get_webview_window("main") {
-                center_top_window(&window, 656.0, 410.0);
+                center_top_window(&window, 256.0, 46.0);
                 let win_clone = window.clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
