@@ -1,0 +1,11 @@
+node_modules/
+dist/
+models/*.gguf
+models/*.part
+logs/
+sandbox/
+test-sandbox/
+aiku.config.json
+desktop/src-tauri/target/
+.env
+.env.*

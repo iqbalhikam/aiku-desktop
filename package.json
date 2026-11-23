@@ -1,0 +1,41 @@
+{
+  "name": "aiku-assistant",
+  "version": "1.0.0",
+  "description": "Lightweight local desktop file assistant powered by Qwen2.5-0.5B-Instruct with P0 filesystem security",
+  "type": "module",
+  "main": "dist/cli/index.js",
+  "bin": {
+    "aiku": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli/index.ts",
+    "start": "node dist/cli/index.js",
+    "rpc": "node dist/rpc/worker.js",
+    "island": "npm run build && powershell -NoProfile -STA -ExecutionPolicy Bypass -File desktop/windows-island/island.ps1",
+    "ui": "npm run build && powershell -NoProfile -STA -ExecutionPolicy Bypass -File desktop/windows-island/island.ps1",
+    "ui:web": "npm run build && node dist/desktop/server.js",
+    "desktop": "npm run build && cargo run --manifest-path desktop/src-tauri/Cargo.toml",
+    "desktop:build": "npm run build && cargo build --release --manifest-path desktop/src-tauri/Cargo.toml",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "node-llama-cpp": "^3.4.0",
+    "pdf-parse": "^1.1.1",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/node": "^22.10.0",
+    "@types/pdf-parse": "^1.1.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

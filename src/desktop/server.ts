@@ -1,0 +1,157 @@
+import { spawn } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import http from "node:http";
+import path from "node:path";
+import { loadOrCreateConfig } from "../config/loader.js";
+import { AiKuRpcWorker } from "../rpc/worker.js";
+
+const CONTENT_TYPES: Readonly<Record<string, string>> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+};
+
+const MAX_BODY_BYTES = 64 * 1024;
+
+function openDesktopWindow(url: string): void {
+  if (process.platform === "win32") {
+    // Buka di Edge App Mode kompak menyerupai Dynamic Island di bagian atas layar (0 download)
+    const child = spawn(
+      "cmd",
+      ["/c", "start", "", "msedge", `--app=${url}`, "--window-size=740,520", "--window-position=380,24"],
+      {
+        detached: true,
+        stdio: "ignore",
+      }
+    );
+    child.unref();
+  }
+}
+
+async function readRequestBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+
+    req.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > MAX_BODY_BYTES) {
+        reject(new Error("Payload terlalu besar."));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on("end", () => {
+      resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+
+    req.on("error", reject);
+  });
+}
+
+async function startDesktopServer(): Promise<void> {
+  const noOpen = process.argv.includes("--no-open");
+  const { config } = await loadOrCreateConfig();
+  const worker = new AiKuRpcWorker(config);
+  const sessionToken = crypto.randomBytes(24).toString("hex");
+  const uiDir = path.resolve(process.cwd(), "desktop", "ui");
+
+  const server = http.createServer((req, res) => {
+    void (async () => {
+      const reqUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+
+      // API RPC endpoint (dilindungi token sesi acak untuk mencegah CSRF lokal)
+      if (req.method === "POST" && reqUrl.pathname === "/api/rpc") {
+        const providedToken = req.headers["x-aiku-token"];
+        if (providedToken !== sessionToken) {
+          res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ ok: false, error: "Token sesi tidak valid." }));
+          return;
+        }
+
+        try {
+          const rawBody = await readRequestBody(req);
+          const response = await worker.handleRequest(rawBody);
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify(response));
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ id: null, ok: false, error: message }));
+        }
+        return;
+      }
+
+      // Layani file statis UI (index.html, styles.css, app.js)
+      if (req.method === "GET") {
+        const requestedFile = reqUrl.pathname === "/" ? "index.html" : reqUrl.pathname.replace(/^\/+/, "");
+        if (requestedFile.includes("..") || requestedFile.includes("/") || requestedFile.includes("\\")) {
+          res.writeHead(400);
+          res.end("Bad request");
+          return;
+        }
+
+        const filePath = path.join(uiDir, requestedFile);
+        const ext = path.extname(filePath).toLowerCase();
+        const contentType = CONTENT_TYPES[ext];
+        if (!contentType) {
+          res.writeHead(404);
+          res.end("Not found");
+          return;
+        }
+
+        try {
+          let content = await fs.readFile(filePath, "utf8");
+          if (requestedFile === "index.html") {
+            // Sisipkan token sesi secara aman melalui meta tag
+            const tokenMeta = `<meta name="aiku-session-token" content="${sessionToken}" />`;
+            content = content.replace("</head>", `  ${tokenMeta}\n  </head>`);
+          }
+          res.writeHead(200, {
+            "Content-Type": contentType,
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+          });
+          res.end(content);
+        } catch {
+          res.writeHead(404);
+          res.end("Not found");
+        }
+        return;
+      }
+
+      res.writeHead(405);
+      res.end("Method not allowed");
+    })();
+  });
+
+  // Bind ketat hanya ke 127.0.0.1 (tidak dapat diakses dari jaringan luar)
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Gagal mendapatkan port lokal server UI.");
+  }
+
+  const url = `http://127.0.0.1:${address.port}`;
+  console.log(`\n[aiKu Desktop UI] Berjalan lokal di: ${url}`);
+  console.log(`[aiKu Sandbox]    Terkunci pada: ${config.allowedDirectories.join(", ")}`);
+  console.log("[aiKu Security]   127.0.0.1 only | Session Token aktif | Dry-Run default");
+  console.log("Tekan Ctrl+C untuk menghentikan aplikasi.\n");
+
+  if (!noOpen) {
+    openDesktopWindow(url);
+  }
+}
+
+startDesktopServer().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[FATAL] ${message}`);
+  process.exitCode = 1;
+});

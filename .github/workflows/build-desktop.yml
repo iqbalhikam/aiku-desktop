@@ -1,0 +1,61 @@
+name: Build & Release aiKu Desktop (Rust Tauri v2 - Windows)
+
+on:
+  push:
+    branches: ["main", "master"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Node dependencies & run security tests
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Setup Rust stable (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Build Rust Tauri v2 Release (.exe)
+        run: cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
+
+      - name: Package portable artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-artifact | Out-Null
+          Copy-Item "desktop\src-tauri\target\release\aiku-desktop.exe" "release-artifact\aiku-desktop.exe"
+
+      - name: Upload aiKu Dynamic Island (.exe)
+        uses: actions/upload-artifact@v4
+        with:
+          name: aiKu-Dynamic-Island-Windows-x64
+          path: release-artifact/aiku-desktop.exe
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifact/aiku-desktop.exe
+          generate_release_notes: true
