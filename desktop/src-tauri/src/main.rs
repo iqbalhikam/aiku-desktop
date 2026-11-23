@@ -6,8 +6,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
-use tauri::{LogicalPosition, LogicalSize, Manager, State};
+use std::sync::{Arc, Mutex};
+use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, State, WindowEvent};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -125,7 +125,7 @@ impl Drop for NodeRpcClient {
 }
 
 struct AppState {
-    worker: Mutex<Option<NodeRpcClient>>,
+    worker: Arc<Mutex<Option<NodeRpcClient>>>,
     next_id: AtomicU64,
 }
 
@@ -154,41 +154,9 @@ fn resolve_project_root() -> Result<PathBuf, String> {
     Err("Tidak dapat menemukan root proyek aiKu (dist/rpc/worker.js). Jalankan `npm run build` terlebih dahulu.".to_string())
 }
 
-#[tauri::command]
-fn rpc_call(
-    state: State<'_, AppState>,
-    method: String,
-    params: Option<Value>,
-) -> Result<Value, String> {
-    let mut guard = state
-        .worker
-        .lock()
-        .map_err(|_| "Gagal mengunci state Node.js sidecar.".to_string())?;
-
-    let needs_spawn = match guard.as_mut() {
-        Some(client) => !client.is_alive(),
-        None => true,
-    };
-
-    if needs_spawn {
-        *guard = Some(NodeRpcClient::spawn()?);
-    }
-
-    let id = state.next_id.fetch_add(1, Ordering::Relaxed);
-    let client = guard
-        .as_mut()
-        .ok_or_else(|| "Node.js sidecar tidak tersedia.".to_string())?;
-
-    client.call(
-        id,
-        &method,
-        params.unwrap_or_else(|| Value::Object(Default::default())),
-    )
-}
-
 fn center_top_window(window: &tauri::WebviewWindow, width: f64, height: f64) {
-    let clamped_w = width.clamp(220.0, 740.0);
-    let clamped_h = height.clamp(56.0, 560.0);
+    let clamped_w = width.clamp(210.0, 680.0);
+    let clamped_h = height.clamp(44.0, 520.0);
     let _ = window.set_size(LogicalSize::new(clamped_w, clamped_h));
 
     if let Ok(Some(monitor)) = window.current_monitor() {
@@ -197,6 +165,42 @@ fn center_top_window(window: &tauri::WebviewWindow, width: f64, height: f64) {
         let x = ((monitor_width - clamped_w) / 2.0).max(0.0);
         let _ = window.set_position(LogicalPosition::new(x, 0.0));
     }
+}
+
+/// Async Tauri command: berjalan di thread pool latar belakang (spawn_blocking)
+/// sehingga Main UI Thread TIDAK PERNAH freeze / Not Responding saat Qwen 0.5B bekerja!
+#[tauri::command]
+async fn rpc_call(
+    state: State<'_, AppState>,
+    method: String,
+    params: Option<Value>,
+) -> Result<Value, String> {
+    let worker_arc = Arc::clone(&state.worker);
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed);
+    let payload_params = params.unwrap_or_else(|| Value::Object(Default::default()));
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = worker_arc
+            .lock()
+            .map_err(|_| "Gagal mengunci state Node.js sidecar.".to_string())?;
+
+        let needs_spawn = match guard.as_mut() {
+            Some(client) => !client.is_alive(),
+            None => true,
+        };
+
+        if needs_spawn {
+            *guard = Some(NodeRpcClient::spawn()?);
+        }
+
+        let client = guard
+            .as_mut()
+            .ok_or_else(|| "Node.js sidecar tidak tersedia.".to_string())?;
+
+        client.call(id, &method, payload_params)
+    })
+    .await
+    .map_err(|e| format!("Task RPC gagal dijalankan: {e}"))?
 }
 
 #[tauri::command]
@@ -213,7 +217,7 @@ fn quit_app(app: tauri::AppHandle) {
 
 fn main() {
     let app_state = AppState {
-        worker: Mutex::new(None),
+        worker: Arc::new(Mutex::new(None)),
         next_id: AtomicU64::new(1),
     };
 
@@ -221,7 +225,14 @@ fn main() {
         .manage(app_state)
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
-                center_top_window(&window, 250.0, 68.0);
+                center_top_window(&window, 232.0, 50.0);
+                let win_clone = window.clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::Focused(false) = event {
+                        // Otomatis kirim sinyal collapse ke Idle Pill saat user klik aplikasi lain
+                        let _ = win_clone.emit("island-blur", ());
+                    }
+                });
             }
             Ok(())
         })
