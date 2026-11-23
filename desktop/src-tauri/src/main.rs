@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, State, WindowEvent};
 
 #[cfg(target_os = "windows")]
@@ -14,6 +15,11 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(target_os = "windows")]
+extern "system" {
+    fn GetAsyncKeyState(vkey: i32) -> i16;
+}
 
 #[derive(Serialize)]
 struct RpcRequest<'a> {
@@ -155,8 +161,8 @@ fn resolve_project_root() -> Result<PathBuf, String> {
 }
 
 fn center_top_window(window: &tauri::WebviewWindow, width: f64, height: f64) {
-    let clamped_w = width.clamp(210.0, 680.0);
-    let clamped_h = height.clamp(44.0, 520.0);
+    let clamped_w = width.clamp(220.0, 680.0);
+    let clamped_h = height.clamp(44.0, 480.0);
     let _ = window.set_size(LogicalSize::new(clamped_w, clamped_h));
 
     if let Ok(Some(monitor)) = window.current_monitor() {
@@ -167,8 +173,84 @@ fn center_top_window(window: &tauri::WebviewWindow, width: f64, height: f64) {
     }
 }
 
-/// Async Tauri command: berjalan di thread pool latar belakang (spawn_blocking)
-/// sehingga Main UI Thread TIDAK PERNAH freeze / Not Responding saat Qwen 0.5B bekerja!
+/// Global Double-Tap Ctrl listener (Windows native, 0 extra crates, 0% CPU).
+/// Mengabaikan kombinasi seperti Ctrl+C / Ctrl+V / Ctrl+Tab.
+#[cfg(target_os = "windows")]
+fn spawn_double_ctrl_listener(app_handle: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        const VK_CONTROL: i32 = 0x11;
+        let mut prev_ctrl_down = false;
+        let mut press_started: Option<Instant> = None;
+        let mut combo_used = false;
+        let mut last_clean_tap: Option<Instant> = None;
+
+        loop {
+            std::thread::sleep(Duration::from_millis(16));
+
+            let ctrl_down = unsafe { (GetAsyncKeyState(VK_CONTROL) as u16 & 0x8000) != 0 };
+
+            if ctrl_down {
+                if !prev_ctrl_down {
+                    press_started = Some(Instant::now());
+                    combo_used = false;
+                } else if !combo_used {
+                    // Cek apakah tombol lain ditekan bersamaan (Shift, Alt, Tab, A-Z, 0-9)
+                    let other_down = unsafe {
+                        let shift = (GetAsyncKeyState(0x10) as u16 & 0x8000) != 0;
+                        let alt = (GetAsyncKeyState(0x12) as u16 & 0x8000) != 0;
+                        let tab = (GetAsyncKeyState(0x09) as u16 & 0x8000) != 0;
+                        let mut any_alnum = false;
+                        for vk in 0x30..=0x5A {
+                            if (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 {
+                                any_alnum = true;
+                                break;
+                            }
+                        }
+                        shift || alt || tab || any_alnum
+                    };
+                    if other_down {
+                        combo_used = true;
+                    }
+                }
+            } else if prev_ctrl_down {
+                // Ctrl baru saja dilepas
+                if let Some(started) = press_started {
+                    let hold_ms = started.elapsed().as_millis();
+                    if !combo_used && hold_ms <= 260 {
+                        let now = Instant::now();
+                        if let Some(prev_tap) = last_clean_tap {
+                            if now.duration_since(prev_tap).as_millis() <= 380 {
+                                // Double-Tap Ctrl terdeteksi!
+                                last_clean_tap = None;
+                                if let Some(window) = app_handle.get_webview_window("main") {
+                                    let is_visible = window.is_visible().unwrap_or(false);
+                                    if is_visible {
+                                        let _ = window.emit("island-toggle-hide", ());
+                                    } else {
+                                        center_top_window(&window, 656.0, 410.0);
+                                        let _ = window.show();
+                                        let _ = window.set_focus();
+                                        let _ = window.emit("island-summon", ());
+                                    }
+                                }
+                            } else {
+                                last_clean_tap = Some(now);
+                            }
+                        } else {
+                            last_clean_tap = Some(now);
+                        }
+                    } else {
+                        last_clean_tap = None;
+                    }
+                }
+                press_started = None;
+            }
+
+            prev_ctrl_down = ctrl_down;
+        }
+    });
+}
+
 #[tauri::command]
 async fn rpc_call(
     state: State<'_, AppState>,
@@ -204,6 +286,13 @@ async fn rpc_call(
 }
 
 #[tauri::command]
+fn hide_island(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
 fn resize_island(app: tauri::AppHandle, width: f64, height: f64) {
     if let Some(window) = app.get_webview_window("main") {
         center_top_window(&window, width, height);
@@ -224,19 +313,26 @@ fn main() {
     tauri::Builder::default()
         .manage(app_state)
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            spawn_double_ctrl_listener(app.handle().clone());
+
             if let Some(window) = app.get_webview_window("main") {
-                center_top_window(&window, 232.0, 50.0);
+                center_top_window(&window, 656.0, 410.0);
                 let win_clone = window.clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
-                        // Otomatis kirim sinyal collapse ke Idle Pill saat user klik aplikasi lain
                         let _ = win_clone.emit("island-blur", ());
                     }
                 });
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![rpc_call, resize_island, quit_app])
+        .invoke_handler(tauri::generate_handler![
+            rpc_call,
+            hide_island,
+            resize_island,
+            quit_app
+        ])
         .run(tauri::generate_context!())
         .expect("Gagal menjalankan aplikasi desktop aiKu");
 }

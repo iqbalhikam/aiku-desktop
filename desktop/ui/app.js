@@ -7,13 +7,11 @@ let currentSandboxRoot = "";
 let draftAllowedDirs = [];
 let toastTimer = null;
 
-const ISLAND_WINDOW_SIZES = {
-  idle: { width: 232, height: 50 },
-  active: { width: 416, height: 96 },
-  palette: { width: 516, height: 390 },
-  inspector: { width: 656, height: 390 },
-  security: { width: 656, height: 380 },
-};
+function formatCompactCount(n) {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
 
 function getSessionToken() {
   return document.querySelector('meta[name="aiku-session-token"]')?.getAttribute("content") ?? "";
@@ -45,35 +43,26 @@ function toRelative(fullPath, rootPath) {
   return fullPath;
 }
 
-function resizeTauriWindow(state) {
-  if (typeof invoke !== "function") return;
-  const dims = ISLAND_WINDOW_SIZES[state] ?? ISLAND_WINDOW_SIZES.palette;
-  void invoke("resize_island", dims);
-}
-
 function setIslandState(state) {
+  const wrapper = document.querySelector(".notch-wrapper");
   const island = document.getElementById("island");
-  const prevState = island.dataset.state;
-  const isShrinking = state === "idle" && prevState !== "idle";
-
-  if (!isShrinking) {
-    resizeTauriWindow(state);
-  }
-
+  wrapper?.classList.remove("island-hidden");
   island.className = `island state-${state}`;
   island.dataset.state = state;
 
-  if (isShrinking) {
-    setTimeout(() => {
-      if (document.getElementById("island")?.dataset.state === "idle") {
-        resizeTauriWindow("idle");
-      }
-    }, 260);
-  }
-
   if (state === "palette") {
-    setTimeout(() => document.getElementById("palette-input")?.focus(), 80);
+    setTimeout(() => document.getElementById("palette-input")?.focus(), 70);
   }
+}
+
+function hideIslandSmoothly() {
+  const wrapper = document.querySelector(".notch-wrapper");
+  wrapper?.classList.add("island-hidden");
+  setTimeout(() => {
+    if (typeof invoke === "function") {
+      void invoke("hide_island");
+    }
+  }, 210);
 }
 
 function showToast(message, type = "ok") {
@@ -113,7 +102,7 @@ async function refreshStatus() {
     currentSandboxRoot = status.primarySandbox;
     const count = filesRes.matches?.length ?? 0;
 
-    document.getElementById("idle-file-count").textContent = `${count} file`;
+    document.getElementById("idle-file-count").textContent = formatCompactCount(count);
     document.getElementById("idle-label").textContent = status.modelReady ? "AI Ready" : "Setup AI";
     document.getElementById("inspector-sandbox").textContent = `Sandbox: ${status.primarySandbox}`;
   } catch (err) {
@@ -496,13 +485,20 @@ function startVoiceInput() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Auto-collapse ke Idle Pill saat user klik aplikasi lain (perilaku Dynamic Island asli!)
+  // Auto-hide saat user klik browser / aplikasi lain agar TIDAK pernah menutupi tab!
+  // Munculkan lagi kapan saja dengan tekan Ctrl 2x cepat!
   if (typeof listen === "function") {
     void listen("island-blur", () => {
       const current = document.getElementById("island")?.dataset.state;
-      if (current && current !== "idle" && current !== "active") {
-        setIslandState("idle");
+      if (current && current !== "active") {
+        hideIslandSmoothly();
       }
+    });
+    void listen("island-toggle-hide", () => {
+      hideIslandSmoothly();
+    });
+    void listen("island-summon", () => {
+      setIslandState("palette");
     });
   }
 
@@ -563,11 +559,11 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   ["handle-palette", "handle-inspector", "handle-security"].forEach((id) => {
-    document.getElementById(id)?.addEventListener("click", () => setIslandState("idle"));
+    document.getElementById(id)?.addEventListener("click", () => hideIslandSmoothly());
   });
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") setIslandState("idle");
+    if (e.key === "Escape") hideIslandSmoothly();
   });
 
   void refreshStatus();
