@@ -6,6 +6,62 @@ let activePlan = null;
 let currentSandboxRoot = "";
 let draftAllowedDirs = [];
 let toastTimer = null;
+let liveVoiceActive = false;
+let activeRecognition = null;
+let chatStyle = localStorage.getItem("aiku_chat_style") === "gemini" ? "gemini" : "default";
+
+function applyChatStyle(style) {
+  chatStyle = style === "gemini" ? "gemini" : "default";
+  localStorage.setItem("aiku_chat_style", chatStyle);
+  const island = document.getElementById("island");
+  if (island) {
+    island.classList.toggle("chat-gemini", chatStyle === "gemini");
+  }
+}
+
+function speakText(text, onEnd) {
+  if (!("speechSynthesis" in window)) {
+    if (onEnd) onEnd();
+    return;
+  }
+  window.speechSynthesis.cancel();
+  const clean = text.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").trim();
+  if (!clean) {
+    if (onEnd) onEnd();
+    return;
+  }
+  const utterance = new SpeechSynthesisUtterance(clean);
+  utterance.lang = "id-ID";
+  utterance.rate = 1.06;
+  const voices = window.speechSynthesis.getVoices();
+  const idVoice = voices.find((v) => v.lang.toLowerCase().startsWith("id"));
+  if (idVoice) utterance.voice = idVoice;
+  utterance.onend = () => {
+    if (onEnd) onEnd();
+  };
+  utterance.onerror = () => {
+    if (onEnd) onEnd();
+  };
+  window.speechSynthesis.speak(utterance);
+}
+
+function stopLiveVoice(returnToPalette = true) {
+  liveVoiceActive = false;
+  if (activeRecognition) {
+    try {
+      activeRecognition.onend = null;
+      activeRecognition.stop();
+    } catch {}
+    activeRecognition = null;
+  }
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+  }
+  document.querySelector(".ai-orb")?.classList.remove("speaking");
+  if (returnToPalette) {
+    setIslandState("palette");
+  }
+}
 
 function formatCompactCount(n) {
   if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
@@ -50,10 +106,10 @@ function setIslandState(state) {
 
   // Besarkan jendela dulu hanya jika keluar dari Idle
   if (state !== "idle" && island.dataset.state === "idle" && typeof invoke === "function") {
-    void invoke("resize_island", { width: 656, height: 410 });
+    void invoke("resize_island", { width: 656, height: 430 });
   }
 
-  island.className = `island state-${state}`;
+  island.className = `island state-${state}${chatStyle === "gemini" ? " chat-gemini" : ""}`;
   island.dataset.state = state;
 
   // Setelah animasi mengecil ke Idle selesai (280ms), susutkan jendela agar area tab kiri-kanan tetap bisa diklik
@@ -137,8 +193,20 @@ function appendPaletteMessage(role, text, files = null, animate = false) {
 
   const div = document.createElement("div");
   div.className = `msg ${role === "user" ? "msg-user" : "msg-ai"}`;
-  const bodyEl = document.createElement("div");
-  div.appendChild(bodyEl);
+
+  let bodyEl;
+  if (role === "assistant" && chatStyle === "gemini") {
+    const row = document.createElement("div");
+    row.className = "gemini-ai-row";
+    row.innerHTML = `<svg class="gemini-spark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l2.2 6.8L21 11l-6.8 2.2L12 20l-2.2-6.8L3 11l6.8-2.2L12 2z"/></svg>`;
+    bodyEl = document.createElement("div");
+    bodyEl.className = "gemini-ai-content";
+    row.appendChild(bodyEl);
+    div.appendChild(row);
+  } else {
+    bodyEl = document.createElement("div");
+    div.appendChild(bodyEl);
+  }
 
   const attachExtras = () => {
     if (files && files.length > 0) {
@@ -155,7 +223,18 @@ function appendPaletteMessage(role, text, files = null, animate = false) {
         )
         .join("");
       div.appendChild(list);
-    } else if (role === "assistant" && text.length > 20) {
+    } else if (role === "assistant" && text.length > 12) {
+      const actions = document.createElement("div");
+      actions.className = "msg-actions";
+
+      const speakBtn = document.createElement("button");
+      speakBtn.type = "button";
+      speakBtn.className = "msg-copy-btn mono";
+      speakBtn.textContent = "🔊 Bacakan";
+      speakBtn.addEventListener("click", () => {
+        speakText(text);
+      });
+
       const copyBtn = document.createElement("button");
       copyBtn.type = "button";
       copyBtn.className = "msg-copy-btn mono";
@@ -169,7 +248,10 @@ function appendPaletteMessage(role, text, files = null, animate = false) {
           showToast("Gagal menyalin.", "err");
         }
       });
-      div.appendChild(copyBtn);
+
+      actions.appendChild(speakBtn);
+      actions.appendChild(copyBtn);
+      div.appendChild(actions);
     }
     stream.scrollTop = stream.scrollHeight;
   };
@@ -279,6 +361,7 @@ async function openSecurityDrawer(initialTab = "sandbox") {
     draftAllowedDirs = [...status.allowedDirectories];
     renderSettingsDirs();
     document.getElementById("settings-categories").value = status.categories.join(", ");
+    document.getElementById("settings-chat-style").value = chatStyle;
     document.getElementById("settings-days").value = String(status.oldInstallerDays);
     document.getElementById("settings-threads").value = String(status.threads);
 
@@ -444,6 +527,9 @@ async function applyActivePlan() {
 
 async function saveSettings(event) {
   event.preventDefault();
+  const chosenStyle = document.getElementById("settings-chat-style")?.value ?? "default";
+  applyChatStyle(chosenStyle);
+
   const categories = document
     .getElementById("settings-categories")
     .value.split(",")
@@ -459,7 +545,7 @@ async function saveSettings(event) {
       oldInstallerDays,
       threads,
     });
-    showToast("Pengaturan tersimpan & langsung aktif!", "ok");
+    showToast(`Pengaturan tersimpan! Mode chat: ${chatStyle === "gemini" ? "Gemini Style" : "Default"}`, "ok");
     await refreshStatus();
     setIslandState("palette");
   } catch (err) {
@@ -467,17 +553,23 @@ async function saveSettings(event) {
   }
 }
 
-function startVoiceInput() {
+function listenOnceForLiveVoice() {
+  if (!liveVoiceActive) return;
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRec) {
-    setIslandState("palette");
-    showToast("Voice input tidak didukung di WebView ini — ketik langsung.", "err");
+    stopLiveVoice(true);
+    showToast("Mikrofon/SpeechRecognition tidak tersedia di WebView ini.", "err");
     return;
   }
+
+  document.querySelector(".ai-orb")?.classList.remove("speaking");
+  showActiveCapsule('"Silakan bicara..."', "Live Voice • Mendengarkan (id-ID)");
+
   const recognition = new SpeechRec();
+  activeRecognition = recognition;
   recognition.lang = "id-ID";
   recognition.interimResults = true;
-  showActiveCapsule('"Mendengarkan..."', "Listening • Offline Voice");
+  recognition.maxAlternatives = 1;
 
   let finalText = "";
   recognition.onresult = (e) => {
@@ -485,18 +577,79 @@ function startVoiceInput() {
       .map((r) => r[0].transcript)
       .join("");
     document.getElementById("active-title").textContent = `"${t}"`;
-    if (e.results[0]?.isFinal) finalText = t;
+    if (e.results[e.results.length - 1]?.isFinal) {
+      finalText = t.trim();
+    }
   };
+
   recognition.onend = () => {
-    if (finalText.trim()) void handleChatPrompt(finalText);
-    else setIslandState("palette");
+    activeRecognition = null;
+    if (!liveVoiceActive) return;
+
+    if (!finalText) {
+      // Belum ada suara -> dengarkan lagi selama mode Live masih aktif
+      setTimeout(() => listenOnceForLiveVoice(), 350);
+      return;
+    }
+
+    void (async () => {
+      const spoken = finalText;
+      chatHistory.push({ role: "user", content: spoken });
+      appendPaletteMessage("user", spoken);
+      showActiveCapsule(`"${spoken.slice(0, 40)}"`, "Live Voice • Qwen 0.5B berpikir...");
+
+      try {
+        const res = await rpc("chat", {
+          message: spoken,
+          history: chatHistory.slice(-6),
+          enableAiForFiles: document.getElementById("chk-ai-docs")?.checked ?? false,
+        });
+        chatHistory.push({ role: "assistant", content: res.reply });
+        appendPaletteMessage("assistant", res.reply, res.attachment?.files ?? null, false);
+
+        if (res.attachment?.type === "plan" && res.attachment.plan) {
+          stopLiveVoice(false);
+          openInspectorWithPlan(res.attachment.plan, res.attachment.sandboxRoot);
+          speakText(res.reply);
+          return;
+        }
+
+        if (!liveVoiceActive) return;
+        document.querySelector(".ai-orb")?.classList.add("speaking");
+        showActiveCapsule(res.reply.slice(0, 48), "Live Voice • aiKu berbicara...");
+        speakText(res.reply, () => {
+          if (liveVoiceActive) {
+            listenOnceForLiveVoice();
+          }
+        });
+      } catch (err) {
+        showToast(`Live Voice error: ${err}`, "err");
+        stopLiveVoice(true);
+      }
+    })();
   };
-  recognition.onerror = () => setIslandState("palette");
-  document.getElementById("btn-active-stop").onclick = () => {
-    recognition.stop();
-    setIslandState("palette");
+
+  recognition.onerror = (ev) => {
+    activeRecognition = null;
+    if (!liveVoiceActive) return;
+    if (ev.error === "no-speech") {
+      setTimeout(() => listenOnceForLiveVoice(), 350);
+    } else {
+      showToast(`Mic error: ${ev.error}`, "err");
+      stopLiveVoice(true);
+    }
   };
+
   recognition.start();
+}
+
+function startVoiceInput() {
+  if (liveVoiceActive) {
+    stopLiveVoice(true);
+    return;
+  }
+  liveVoiceActive = true;
+  listenOnceForLiveVoice();
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -532,7 +685,8 @@ document.addEventListener("DOMContentLoaded", () => {
     e.stopPropagation();
     startVoiceInput();
   });
-  document.getElementById("btn-active-stop").addEventListener("click", () => setIslandState("palette"));
+  document.getElementById("btn-active-stop").addEventListener("click", () => stopLiveVoice(true));
+  document.getElementById("chip-live-voice")?.addEventListener("click", () => startVoiceInput());
 
   document.getElementById("palette-form").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -588,7 +742,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Escape") setIslandState("idle");
   });
 
-  // Mulai di State 1 (Idle Pill) dengan ukuran jendela ramping
+  // Terapkan gaya chat tersimpan (default / gemini) & mulai di State 1 (Idle Pill)
+  applyChatStyle(chatStyle);
   setIslandState("idle");
   void refreshStatus();
 });

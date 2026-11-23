@@ -81,7 +81,7 @@
                 placeholder="Ask AI, search files, or summarize clipboard."
                 autocomplete="off"
               />
-              <button id="btn-palette-mic" type="button" class="icon-btn-tiny" title="Input Suara">
+              <button id="btn-palette-mic" type="button" class="icon-btn-tiny" title="Ngobrol Live (Suara)">
                 <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <rect x="9" y="2" width="6" height="11" rx="3" />
                   <path d="M5 10a7 7 0 0 0 14 0M12 17v4" />
@@ -101,6 +101,14 @@
             </form>
 
             <div class="palette-chips">
+              <button id="chip-live-voice" type="button" class="island-chip chip-live">
+                <svg class="icon-xs text-cyan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+                  <path d="M19 10a7 7 0 0 1-14 0M12 17v4" />
+                </svg>
+                <span>Ngobrol Live</span>
+              </button>
+
               <button id="chip-organize" type="button" class="island-chip">
                 <svg class="icon-xs text-emerald" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
@@ -213,10 +221,17 @@
                 <button id="btn-open-sandbox" type="button" class="island-chip">Buka Folder</button>
               </div>
 
-              <div class="field-grid-3">
+              <div class="field-grid-4">
                 <div class="field-group">
                   <label class="field-label mono" for="settings-categories">Kategori AI</label>
                   <input id="settings-categories" type="text" required />
+                </div>
+                <div class="field-group">
+                  <label class="field-label mono" for="settings-chat-style">Tampilan Chat</label>
+                  <select id="settings-chat-style">
+                    <option value="default">Default (Compact)</option>
+                    <option value="gemini">Gemini Style</option>
+                  </select>
                 </div>
                 <div class="field-group">
                   <label class="field-label mono" for="settings-days">Installer (hari)</label>
