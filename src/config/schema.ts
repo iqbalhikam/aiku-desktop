@@ -11,21 +11,32 @@ export const LlmConfigSchema = z
       .default(
         "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
       ),
-    threads: z.number().int().min(1).max(4).default(4),
+    threads: z.number().int().min(1).max(8).default(4),
     contextSize: z.number().int().min(512).max(4096).default(2048),
     aiMode: z.enum(["offline", "hybrid"]).default("hybrid"),
     geminiApiKey: z.string().max(256).optional(),
   })
   .strict();
 
+export const TTS_MODE_VALUES = [
+  "ava_hd",
+  "andrew_hd",
+  "gadis_hd",
+  "ardi_hd",
+  "natural",
+  "clone",
+  "piper",
+  "system",
+] as const;
+
 export const VoiceConfigSchema = z
   .object({
-    ttsMode: z.enum(["system", "piper", "clone"]).default("system"),
+    ttsMode: z.enum(TTS_MODE_VALUES).default("ava_hd"),
     activeProfileId: z
       .string()
       .regex(/^[a-z0-9_-]{3,48}$/)
       .optional(),
-    speed: z.number().min(0.65).max(1.6).default(1.05),
+    speed: z.number().min(0.65).max(1.6).default(1.03),
   })
   .strict();
 

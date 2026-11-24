@@ -87,9 +87,15 @@ async function startDesktopServer(): Promise<void> {
             "Cache-Control": "no-cache",
             "X-Content-Type-Options": "nosniff",
           });
-          const response = await worker.handleRequest(rawBody, (_id, chunk) => {
-            res.write(`${JSON.stringify({ stream: chunk })}\n`);
-          });
+          const response = await worker.handleRequest(
+            rawBody,
+            (_id, chunk) => {
+              res.write(`${JSON.stringify({ stream: chunk })}\n`);
+            },
+            (_id, wavBase64) => {
+              res.write(`${JSON.stringify({ audio: wavBase64 })}\n`);
+            }
+          );
           res.end(`${JSON.stringify(response)}\n`);
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);

@@ -6,6 +6,13 @@ import path from "node:path";
 import { z } from "zod";
 import type { LlmInferenceClient } from "../../core/llm/llama-engine.js";
 import type { PathGuard } from "../../core/security/path-guard.js";
+import {
+  createSafeSandboxFolder,
+  executeWindowsSystemControl,
+  launchAnyInstalledWindowsApp,
+  openSandboxItemInWindows,
+} from "../agent-tools/desktop-agent.js";
+import { invalidateLocalSearchCache } from "../file-manager/local-search.js";
 
 export const MAX_TLDR_WORDS = 1500;
 
@@ -814,7 +821,42 @@ export async function executeAiActionTag(options: {
       await openSafeUrlOrSearch(val, { preferChrome });
       return true;
     }
+    // Universal Start Menu + Desktop Shortcut Discovery (mendukung aplikasi apa pun yang terpasang di PC!)
+    const discovered = await launchAnyInstalledWindowsApp(val, [options.sandboxRoot]);
+    return discovered.launched;
+  }
+
+  if (kind === "OPEN_FILE") {
+    const opened = await openSandboxItemInWindows({
+      targetQuery: val,
+      allowedDirectories: [options.sandboxRoot],
+      pathGuard: options.pathGuard,
+    });
+    return opened.opened;
+  }
+
+  if (kind === "SYS_CONTROL") {
+    const ctrl = await executeWindowsSystemControl(val);
+    return ctrl.ok;
+  }
+
+  if (kind === "SET_BRIGHTNESS") {
+    const num = Number.parseInt(val.replace(/[^0-9]/g, ""), 10);
+    if (!Number.isNaN(num)) {
+      const ctrl = await executeWindowsSystemControl("brightness", num);
+      return ctrl.ok;
+    }
     return false;
+  }
+
+  if (kind === "CREATE_FOLDER") {
+    await createSafeSandboxFolder({
+      folderPath: val,
+      sandboxRoot: options.sandboxRoot,
+      pathGuard: options.pathGuard,
+    });
+    invalidateLocalSearchCache();
+    return true;
   }
 
   if (kind === "OPEN_WEB" || kind === "OPEN_CHROME") {
@@ -857,12 +899,20 @@ export async function tryFallbackNaturalDesktopAction(options: {
 
   const preferChrome = /\bchrome\b/.test(lower);
 
-  // 1. Cari video/lagu di YouTube (mis. "cari tutorial rust di youtube" / "putar lofi di youtube")
+  // 1. Cari video/lagu di YouTube (mis. "cari tutorial rust di youtube" / "putar lofi di youtube" / "coba putar lagu Justin Bieber")
   const ytSearchMatch = lower.match(
     /\b(?:cari|carikan|putar|putarkan|stel|buka|membuka)\s+(.+?)\s+di\s+(?:youtube|yt)\b/
   );
   if (ytSearchMatch?.[1] && !/^(youtube|yt|aplikasi|web|situs)$/.test(ytSearchMatch[1].trim())) {
     await openSafeUrlOrSearch(ytSearchMatch[1].trim(), { preferChrome, youtubeSearch: true });
+    return true;
+  }
+
+  const playSongMatch = lower.match(
+    /\b(?:putar|putarkan|stel|play)\s+(?:lagu|musik|music|video)\s+([^?.!]{2,80})/i
+  );
+  if (playSongMatch?.[1]) {
+    await openSafeUrlOrSearch(playSongMatch[1].trim(), { preferChrome, youtubeSearch: true });
     return true;
   }
 
@@ -897,6 +947,16 @@ export async function tryFallbackNaturalDesktopAction(options: {
       });
       return true;
     }
+  }
+
+  // 5. Universal Start Menu / Desktop App Fallback (mis. "tolong buka aplikasi discord" / "bukain excel")
+  const genericOpenMatch = lower.match(
+    /^(?:tolong\s+|coba\s+)?(?:buka|bukain|bukakan|open|jalankan|jalanin)\s+(?:aplikasi\s+)?([a-z0-9 _-]{2,40})[!.]*$/i
+  );
+  if (genericOpenMatch?.[1]) {
+    const candidateApp = genericOpenMatch[1].trim();
+    const res = await launchAnyInstalledWindowsApp(candidateApp, [options.sandboxRoot]);
+    if (res.launched) return true;
   }
 
   return false;

@@ -178,6 +178,12 @@ impl NodeRpcClient {
                 continue;
             }
 
+            // Jika baris ini adalah potongan audio WAV real-time per-kalimat, langsung putar di UI tanpa menunggu chat selesai!
+            if let Some(audio_b64) = raw_val.get("audio").and_then(|v| v.as_str()) {
+                let _ = app_handle.emit("ai-audio-chunk", audio_b64.to_string());
+                continue;
+            }
+
             let parsed: RpcResponse = serde_json::from_value(raw_val)
                 .map_err(|e| format!("Struktur respons JSON-RPC tidak valid: {e}"))?;
 

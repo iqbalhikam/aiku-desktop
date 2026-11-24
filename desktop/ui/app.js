@@ -651,6 +651,17 @@ function applyChatStyle(style) {
 }
 
 let activeOfflineAudio = null;
+let activeSpeechSessionId = 0;
+let autoSpeakChat = localStorage.getItem("aiku_auto_speak") === "1";
+let wakeWordEnabled = localStorage.getItem("aiku_wake_word") !== "0";
+let wakeWordRecognition = null;
+let wakeWordRestartTimer = null;
+let wakeWordBlockedByPermission = false;
+let liveSilenceCommitTimer = null;
+let liveIdleTimeoutTimer = null;
+let liveMicMeterCtx = null;
+let liveMicMeterStream = null;
+let liveMicMeterRaf = null;
 let voiceSetupPollTimer = null;
 let voiceRecorder = null;
 let voiceRecordStream = null;
@@ -659,6 +670,7 @@ let voiceRecordCountdownTimer = null;
 let voiceRecordSecLeft = 0;
 
 function stopActiveSpeech() {
+  activeSpeechSessionId += 1;
   if ("speechSynthesis" in window) {
     window.speechSynthesis.cancel();
   }
@@ -671,7 +683,19 @@ function stopActiveSpeech() {
   }
 }
 
-function speakWithWebSpeech(clean, speed, onEnd) {
+function selectPreferredIndonesianVoice(preferNaturalNeural = true) {
+  if (!("speechSynthesis" in window)) return null;
+  const voices = window.speechSynthesis.getVoices() || [];
+  const idVoices = voices.filter((v) => v.lang.toLowerCase().startsWith("id"));
+  if (idVoices.length === 0) return null;
+  if (preferNaturalNeural) {
+    const natural = idVoices.find((v) => /natural|neural|gadis|ardi|online/i.test(v.name));
+    if (natural) return natural;
+  }
+  return idVoices[0] || null;
+}
+
+function speakWithWebSpeech(clean, speed, onEnd, preferNatural = true) {
   if (!("speechSynthesis" in window)) {
     if (onEnd) onEnd();
     return;
@@ -679,9 +703,8 @@ function speakWithWebSpeech(clean, speed, onEnd) {
   const utterance = new SpeechSynthesisUtterance(clean);
   utterance.lang = "id-ID";
   utterance.rate = Number.isFinite(speed) ? speed : 1.05;
-  const voices = window.speechSynthesis.getVoices();
-  const idVoice = voices.find((v) => v.lang.toLowerCase().startsWith("id"));
-  if (idVoice) utterance.voice = idVoice;
+  const chosenVoice = selectPreferredIndonesianVoice(preferNatural);
+  if (chosenVoice) utterance.voice = chosenVoice;
   utterance.onend = () => {
     if (onEnd) onEnd();
   };
@@ -691,51 +714,287 @@ function speakWithWebSpeech(clean, speed, onEnd) {
   window.speechSynthesis.speak(utterance);
 }
 
+function toPlayableAudioDataUri(payload) {
+  if (!payload) return "";
+  if (payload.startsWith("data:audio/")) return payload;
+  const mime = payload.startsWith("UklGR") ? "audio/wav" : "audio/mpeg";
+  return `data:${mime};base64,${payload}`;
+}
+
+function isHumanConversationalMode(mode) {
+  return (
+    mode === "ava_hd" ||
+    mode === "andrew_hd" ||
+    mode === "gadis_hd" ||
+    mode === "ardi_hd" ||
+    mode === "natural"
+  );
+}
+
+function isServerWavVoiceMode(mode, vStatus) {
+  if (isHumanConversationalMode(mode)) return true;
+  if (mode === "clone") return Boolean(vStatus?.openVoiceReady || vStatus?.piperReady);
+  if (mode === "piper") return Boolean(vStatus?.piperReady);
+  return false;
+}
+
+function describeVoiceModeLabel(mode) {
+  switch (mode) {
+    case "ava_hd":
+    case "natural":
+      return "Manusia HD — Ava Conversational (24kHz)";
+    case "andrew_hd":
+      return "Manusia HD — Andrew Conversational (24kHz)";
+    case "gadis_hd":
+      return "Manusia HD — Gadis Indonesia (24kHz)";
+    case "ardi_hd":
+      return "Manusia HD — Ardi Indonesia (24kHz)";
+    case "clone":
+      return "Custom Voice Clone + Intonasi Manusia";
+    case "piper":
+      return "Piper Offline Murni (Tanpa Internet)";
+    default:
+      return "Suara Sistem Windows (SAPI5)";
+  }
+}
+
+function splitSpeechClausesClient(rawText) {
+  const cleaned = String(rawText || "")
+    .replace(/```[\s\S]*?```/g, " Berikut kodenya. ")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/(?:^|\n)\s*\d+[.)]\s+/g, ". ")
+    .replace(/(?:^|\n)\s*[-•*]\s+/g, ", ")
+    .replace(/[#>_~|]/g, " ")
+    .replace(/\s*\.\s*\./g, ".")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return [];
+
+  const clauses = [];
+  let buf = "";
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    const next = cleaned[i + 1] || " ";
+    buf += ch;
+    const minLen = clauses.length === 0 ? 16 : 36;
+    const isSentenceEnd = (ch === "." || ch === "!" || ch === "?") && /\s/.test(next);
+    const isLongSemi = (ch === ";" || ch === ":") && /\s/.test(next) && buf.trim().length >= 110;
+    if ((isSentenceEnd && buf.trim().length >= minLen) || isLongSemi) {
+      clauses.push(buf.trim());
+      buf = "";
+    }
+  }
+  if (buf.trim()) {
+    if (clauses.length > 0 && buf.trim().length < 12) {
+      clauses[clauses.length - 1] = `${clauses[clauses.length - 1]} ${buf.trim()}`;
+    } else {
+      clauses.push(buf.trim());
+    }
+  }
+  return clauses;
+}
+
+/**
+ * Sesi pemutar audio streaming real-time (tanpa jeda antar kalimat / gapless queue).
+ * Mendukung mode Server 24kHz HD WAV Chunks (Manusia HD / Voice Clone / Piper) maupun WebSpeech per-kalimat utuh!
+ */
+function createRealtimeVoiceSession(onAllDone = null) {
+  stopActiveSpeech();
+  const sessionId = activeSpeechSessionId;
+  const vStatus = latestStatusCache?.voiceStatus;
+  const mode = vStatus?.ttsMode || "ava_hd";
+  const speed = Number(vStatus?.speed || 1.03);
+  const useOfflineWav = isServerWavVoiceMode(mode, vStatus);
+
+  const wavQueue = [];
+  let playingWav = false;
+  let streamFinished = false;
+  let pendingWebUtterances = 0;
+  let textBuf = "";
+  let inCodeFence = false;
+  let emittedClauses = 0;
+
+  const checkDone = () => {
+    if (sessionId !== activeSpeechSessionId) return;
+    if (useOfflineWav) {
+      if (streamFinished && !playingWav && wavQueue.length === 0) {
+        if (onAllDone) onAllDone();
+      }
+    } else if (streamFinished && pendingWebUtterances <= 0) {
+      if (onAllDone) onAllDone();
+    }
+  };
+
+  const pumpNextWav = () => {
+    if (sessionId !== activeSpeechSessionId) return;
+    if (playingWav || wavQueue.length === 0) {
+      checkDone();
+      return;
+    }
+    playingWav = true;
+    const nextB64 = wavQueue.shift();
+    const audio = new Audio(toPlayableAudioDataUri(nextB64));
+    activeOfflineAudio = audio;
+    const finishOne = () => {
+      if (activeOfflineAudio === audio) activeOfflineAudio = null;
+      playingWav = false;
+      pumpNextWav();
+    };
+    audio.onended = finishOne;
+    audio.onerror = finishOne;
+    void audio.play().catch(finishOne);
+  };
+
+  const enqueueWebClause = (clauseText) => {
+    const clean = clauseText.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").trim();
+    if (!clean || !("speechSynthesis" in window) || sessionId !== activeSpeechSessionId) return;
+    pendingWebUtterances += 1;
+    const utt = new SpeechSynthesisUtterance(clean);
+    utt.lang = "id-ID";
+    utt.rate = speed;
+    const voice = selectPreferredIndonesianVoice(mode !== "system");
+    if (voice) utt.voice = voice;
+    const doneUtt = () => {
+      pendingWebUtterances = Math.max(0, pendingWebUtterances - 1);
+      checkDone();
+    };
+    utt.onend = doneUtt;
+    utt.onerror = doneUtt;
+    window.speechSynthesis.speak(utt);
+  };
+
+  return {
+    useOfflineWav,
+    pushAudioBase64(wavBase64) {
+      if (sessionId !== activeSpeechSessionId || !wavBase64) return;
+      wavQueue.push(wavBase64);
+      pumpNextWav();
+    },
+    pushTextToken(chunk) {
+      if (useOfflineWav || sessionId !== activeSpeechSessionId) return;
+      textBuf += chunk;
+      while (textBuf.includes("```")) {
+        const idx = textBuf.indexOf("```");
+        if (!inCodeFence) {
+          const pre = textBuf.slice(0, idx).trim();
+          if (pre.length >= 3) enqueueWebClause(pre);
+          textBuf = textBuf.slice(idx + 3);
+          inCodeFence = true;
+        } else {
+          textBuf = textBuf.slice(idx + 3);
+          inCodeFence = false;
+        }
+      }
+      if (inCodeFence) return;
+
+      const minHard = emittedClauses === 0 ? 16 : 36;
+      let cut = -1;
+      for (let i = 0; i < textBuf.length - 1; i++) {
+        const c = textBuf[i];
+        const nx = textBuf[i + 1];
+        if (c === "\n" && i >= minHard) {
+          cut = i + 1;
+          break;
+        }
+        if ((c === "." || c === "!" || c === "?") && /\s/.test(nx) && i >= minHard) {
+          cut = i + 1;
+          break;
+        }
+        if ((c === ";" || c === ":") && /\s/.test(nx) && i >= 110) {
+          cut = i + 1;
+          break;
+        }
+      }
+      if (cut > 0) {
+        const part = textBuf.slice(0, cut);
+        textBuf = textBuf.slice(cut);
+        emittedClauses += 1;
+        enqueueWebClause(part);
+      }
+    },
+    finishStream() {
+      if (sessionId !== activeSpeechSessionId) return;
+      if (!useOfflineWav && !inCodeFence && textBuf.trim().length > 0) {
+        enqueueWebClause(textBuf.trim());
+        textBuf = "";
+      }
+      streamFinished = true;
+      checkDone();
+    },
+  };
+}
+
 function speakText(text, onEnd, overrideOptions = null) {
   stopActiveSpeech();
-  const clean = text.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").trim();
-  if (!clean) {
+  const sessionId = activeSpeechSessionId;
+  const clauses = splitSpeechClausesClient(text);
+  if (clauses.length === 0) {
     if (onEnd) onEnd();
     return;
   }
 
   const vStatus = latestStatusCache?.voiceStatus;
-  const mode = overrideOptions?.mode || vStatus?.ttsMode || "system";
-  const speed = Number(overrideOptions?.speed || vStatus?.speed || 1.05);
+  const mode = overrideOptions?.mode || vStatus?.ttsMode || "ava_hd";
+  const speed = Number(overrideOptions?.speed || vStatus?.speed || 1.03);
   const profileId = overrideOptions?.profileId ?? vStatus?.activeProfileId ?? undefined;
 
-  if ((mode === "clone" || mode === "piper") && vStatus?.piperReady) {
+  if (isServerWavVoiceMode(mode, vStatus)) {
+    // Sintesis kalimat pertama langsung putar (~250ms), sambil kalimat berikutnya di-prefetch paralel di latar belakang!
+    const audioQueue = [];
+    let playing = false;
+    let synthDone = false;
+
+    const tryPlayNext = () => {
+      if (sessionId !== activeSpeechSessionId) return;
+      if (playing) return;
+      if (audioQueue.length === 0) {
+        if (synthDone && onEnd) onEnd();
+        return;
+      }
+      playing = true;
+      const b64 = audioQueue.shift();
+      const audio = new Audio(toPlayableAudioDataUri(b64));
+      activeOfflineAudio = audio;
+      const nextStep = () => {
+        if (activeOfflineAudio === audio) activeOfflineAudio = null;
+        playing = false;
+        tryPlayNext();
+      };
+      audio.onended = nextStep;
+      audio.onerror = nextStep;
+      void audio.play().catch(nextStep);
+    };
+
     void (async () => {
       try {
-        const res = await rpc("synthesizeSpeech", {
-          text: clean,
-          mode,
-          speed,
-          ...(profileId ? { profileId } : {}),
-        });
-        if (!res?.wavBase64) {
-          speakWithWebSpeech(clean, speed, onEnd);
-          return;
+        for (const clause of clauses) {
+          if (sessionId !== activeSpeechSessionId) return;
+          const res = await rpc("synthesizeSpeech", {
+            text: clause,
+            mode,
+            speed,
+            ...(profileId ? { profileId } : {}),
+          });
+          if (sessionId !== activeSpeechSessionId) return;
+          if (res?.wavBase64) {
+            audioQueue.push(res.wavBase64);
+            tryPlayNext();
+          }
         }
-        const audio = new Audio(`data:audio/wav;base64,${res.wavBase64}`);
-        activeOfflineAudio = audio;
-        audio.onended = () => {
-          if (activeOfflineAudio === audio) activeOfflineAudio = null;
-          if (onEnd) onEnd();
-        };
-        audio.onerror = () => {
-          if (activeOfflineAudio === audio) activeOfflineAudio = null;
-          speakWithWebSpeech(clean, speed, onEnd);
-        };
-        await audio.play();
+        synthDone = true;
+        tryPlayNext();
       } catch {
-        speakWithWebSpeech(clean, speed, onEnd);
+        if (sessionId === activeSpeechSessionId) {
+          speakWithWebSpeech(clauses.join(" "), speed, onEnd, true);
+        }
       }
     })();
     return;
   }
 
-  speakWithWebSpeech(clean, speed, onEnd);
+  speakWithWebSpeech(clauses.join(" "), speed, onEnd, mode !== "system");
 }
 
 function uint8ArrayToBase64(bytes) {
@@ -853,10 +1112,16 @@ function populateVoiceStudio(vStatus) {
   }
 
   if (modeSel) {
-    modeSel.value = vStatus.ttsMode || "system";
+    const normalized = vStatus.ttsMode === "natural" ? "ava_hd" : vStatus.ttsMode || "ava_hd";
+    modeSel.value = normalized;
   }
   if (speedSel && vStatus.speed) {
-    speedSel.value = String(vStatus.speed);
+    const spdStr = String(vStatus.speed);
+    if ([...speedSel.options].some((o) => o.value === spdStr)) {
+      speedSel.value = spdStr;
+    } else {
+      speedSel.value = "1.03";
+    }
   }
   if (profSel) {
     const profiles = Array.isArray(vStatus.profiles) ? vStatus.profiles : [];
@@ -877,13 +1142,7 @@ function populateVoiceStudio(vStatus) {
     }
   }
   if (foot) {
-    const activeModeLabel =
-      vStatus.ttsMode === "clone"
-        ? "Mode aktif: Custom Voice Clone Offline"
-        : vStatus.ttsMode === "piper"
-          ? "Mode aktif: Piper Bahasa Indonesia Offline"
-          : "Mode aktif: Suara Sistem Windows";
-    foot.textContent = `${activeModeLabel} • 100% lokal`;
+    foot.textContent = `Aktif: ${describeVoiceModeLabel(vStatus.ttsMode || "ava_hd")}`;
   }
 }
 
@@ -1070,11 +1329,96 @@ async function toggleVoiceSampleRecording() {
   }
 }
 
+function pickBestRecognitionAlternative(result) {
+  if (!result || result.length === 0) return "";
+  let bestText = result[0]?.transcript || "";
+  let bestScore = typeof result[0]?.confidence === "number" ? result[0].confidence : 0.5;
+
+  // Periksa hingga 3 kandidat alternatif dari mesin STT (memilih yang paling natural & akurat untuk istilah umum)
+  const techHintRe = /\b(aiku|chrome|vs\s*code|visual\s+studio|youtube|spotify|whatsapp|notepad|bitcoin|chatgpt|github|windows|powershell|folder|desktop|emas|dolar|cuaca|berita)\b/i;
+  for (let a = 0; a < Math.min(3, result.length); a++) {
+    const alt = result[a];
+    if (!alt?.transcript) continue;
+    const baseConf = typeof alt.confidence === "number" && alt.confidence > 0 ? alt.confidence : 0.5 - a * 0.05;
+    const bonus = techHintRe.test(alt.transcript) ? 0.14 : 0;
+    const score = baseConf + bonus;
+    if (score > bestScore) {
+      bestScore = score;
+      bestText = alt.transcript;
+    }
+  }
+  return bestText;
+}
+
+function pulseListeningOrbVisual(intensity = 0.65) {
+  const orb = document.querySelector(".ai-orb");
+  if (orb) {
+    orb.classList.add("listening");
+    orb.style.setProperty("--mic-level", String(Math.max(0, Math.min(1, intensity))));
+  }
+  const bars = Array.from(document.querySelectorAll("#active-voice-visual .waveform .bar"));
+  bars.forEach((bar, idx) => {
+    const phase = 0.6 + ((idx % 3) * 0.18);
+    const scale = Math.max(0.35, Math.min(1.25, 0.35 + intensity * 0.95 * phase));
+    bar.style.transform = `scaleY(${scale.toFixed(2)})`;
+  });
+}
+
+function stopLiveMicMeter() {
+  if (liveMicMeterRaf) {
+    cancelAnimationFrame(liveMicMeterRaf);
+    liveMicMeterRaf = null;
+  }
+  if (liveMicMeterStream) {
+    liveMicMeterStream.getTracks().forEach((t) => t.stop());
+    liveMicMeterStream = null;
+  }
+  if (liveMicMeterCtx) {
+    void liveMicMeterCtx.close().catch(() => {});
+    liveMicMeterCtx = null;
+  }
+  const orb = document.querySelector(".ai-orb");
+  if (orb) {
+    orb.classList.remove("listening");
+    orb.style.setProperty("--mic-level", "0");
+  }
+  document.querySelectorAll("#active-voice-visual .waveform .bar").forEach((bar) => {
+    bar.style.transform = "";
+  });
+}
+
+function clearLiveListeningTimers() {
+  if (liveSilenceCommitTimer) {
+    clearTimeout(liveSilenceCommitTimer);
+    liveSilenceCommitTimer = null;
+  }
+  if (liveIdleTimeoutTimer) {
+    clearTimeout(liveIdleTimeoutTimer);
+    liveIdleTimeoutTimer = null;
+  }
+}
+
+function normalizeIndonesianSpokenText(raw) {
+  return String(raw || "")
+    .replace(/\b(?:ai\s*ku|ay\s*ku|ayku|aiko|eiku|haiku)\b/gi, "aiKu")
+    .replace(/\b(?:ps\s*code|vs\s*code|visual\s+studio\s+port|visual\s+studio\s+kot)\b/gi, "VS Code")
+    .replace(/\b(?:google\s+krom|google\s+crome|krom|crome)\b/gi, "Chrome")
+    .replace(/\b(?:yutub|yu\s*tub)\b/gi, "YouTube")
+    .replace(/\b(?:whats\s*app|watsap|wasap)\b/gi, "WhatsApp")
+    .replace(/\b(?:chat\s*gpt|cet\s*gpt)\b/gi, "ChatGPT")
+    .replace(/\b(?:bit\s*koin)\b/gi, "Bitcoin")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function stopLiveVoice(returnToPalette = true) {
   liveVoiceActive = false;
+  clearLiveListeningTimers();
+  stopLiveMicMeter();
   if (activeRecognition) {
     try {
       activeRecognition.onend = null;
+      activeRecognition.onerror = null;
       activeRecognition.stop();
     } catch {}
     activeRecognition = null;
@@ -1084,6 +1428,7 @@ function stopLiveVoice(returnToPalette = true) {
   if (returnToPalette) {
     setIslandState("palette");
   }
+  scheduleWakeWordRestart(750);
 }
 
 function formatCompactCount(n) {
@@ -1106,10 +1451,27 @@ function escapeHtml(text) {
 }
 
 function formatSimpleMarkdown(text) {
-  return escapeHtml(text)
+  const codeBlocks = [];
+  const withPlaceholders = String(text).replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+    const idx = codeBlocks.length;
+    const langBadge = lang ? `<div class="ai-code-lang mono">${escapeHtml(lang)}</div>` : "";
+    codeBlocks.push(
+      `<div class="ai-code-wrap">${langBadge}<pre class="ai-code-block mono"><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre></div>`
+    );
+    return `\u0000CODEBLOCK_${idx}\u0000`;
+  });
+
+  let formatted = escapeHtml(withPlaceholders)
+    .replace(/^###\s+(.+)$/gm, "<strong>$1</strong>")
+    .replace(/^##\s+(.+)$/gm, "<strong>$1</strong>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/`([^`]+)`/g, '<code class="mono">$1</code>')
     .replace(/\n/g, "<br />");
+
+  codeBlocks.forEach((html, idx) => {
+    formatted = formatted.replace(`\u0000CODEBLOCK_${idx}\u0000`, html);
+  });
+  return formatted;
 }
 
 function toRelative(fullPath, rootPath) {
@@ -1355,14 +1717,17 @@ function showToast(message, type = "ok", subtitle = "", forceFase2 = false) {
 }
 
 let activeChunkHandler = null;
+let activeAudioChunkHandler = null;
 
-async function rpcStream(method, params = {}, onChunk = null) {
+async function rpcStream(method, params = {}, onChunk = null, onAudioChunk = null) {
   if (typeof invoke === "function") {
     activeChunkHandler = onChunk;
+    activeAudioChunkHandler = onAudioChunk;
     try {
       return await invoke("rpc_call", { method, params });
     } finally {
       activeChunkHandler = null;
+      activeAudioChunkHandler = null;
     }
   }
 
@@ -1396,6 +1761,8 @@ async function rpcStream(method, params = {}, onChunk = null) {
       const obj = JSON.parse(line);
       if (typeof obj.stream === "string") {
         onChunk?.(obj.stream);
+      } else if (typeof obj.audio === "string") {
+        onAudioChunk?.(obj.audio);
       } else if ("ok" in obj) {
         finalPayload = obj;
       }
@@ -2156,6 +2523,85 @@ function appendSensitiveAlertCard(alertData) {
   stream.scrollTop = stream.scrollHeight;
 }
 
+function appendCommandApprovalCard(cmdData) {
+  const stream = document.getElementById("palette-chat-stream");
+  if (!stream || !cmdData?.cmdId) return;
+  stream.classList.remove("hidden");
+
+  const card = document.createElement("div");
+  card.className = "security-alert-card";
+
+  card.innerHTML = `
+    <div class="security-alert-Card-top">
+      <div class="security-alert-head">
+        <div class="security-alert-icon">${ALERT_SVG_ICONS.info}</div>
+        <div class="security-alert-title">Konfirmasi Eksekusi Perintah Sistem</div>
+      </div>
+      <span class="security-alert-badge mono">POWERSHELL AGENT</span>
+    </div>
+    <div class="security-alert-desc">Tinjau perintah berikut sebelum dijalankan di direktori <code class="mono">${escapeHtml(cmdData.cwd || ".")}</code>:</div>
+    <div class="security-diff-box mono">${escapeHtml(cmdData.command || "")}</div>
+  `;
+
+  const outputWrap = document.createElement("div");
+  outputWrap.className = "cmd-output-box mono hidden";
+  card.appendChild(outputWrap);
+
+  const actions = document.createElement("div");
+  actions.className = "security-alert-actions";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "btn-sec-cancel mono";
+  cancelBtn.textContent = "Batalkan";
+
+  const approveBtn = document.createElement("button");
+  approveBtn.type = "button";
+  approveBtn.className = "btn-sec-approve mono";
+  approveBtn.textContent = "Setujui & Jalankan";
+
+  cancelBtn.addEventListener("click", () => {
+    approveBtn.disabled = true;
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = "Dibatalkan";
+    showIslandNotification("Perintah Dibatalkan", cmdData.command, "warn");
+  });
+
+  approveBtn.addEventListener("click", async () => {
+    approveBtn.disabled = true;
+    cancelBtn.disabled = true;
+    approveBtn.textContent = "Menjalankan...";
+    try {
+      const res = await rpc("executeApprovedCommand", {
+        cmdId: cmdData.cmdId,
+        confirmToken: "USER_APPROVED_CMD",
+      });
+      approveBtn.textContent = `Selesai (${res.durationMs}ms)`;
+      outputWrap.textContent = res.output || "(Selesai tanpa output)";
+      outputWrap.classList.remove("hidden");
+      chatHistory.push({
+        role: "assistant",
+        content: `[Hasil eksekusi perintah "${res.command}" (exit ${res.exitCode}):\n${res.output}]`.slice(0, 3800),
+      });
+      stream.scrollTop = stream.scrollHeight;
+      trackHitBoxForMs(250);
+    } catch (err) {
+      approveBtn.textContent = "Gagal";
+      outputWrap.textContent = String(err);
+      outputWrap.classList.remove("hidden");
+      showIslandNotification("Eksekusi Perintah Gagal", String(err), "err");
+    }
+  });
+
+  actions.appendChild(cancelBtn);
+  actions.appendChild(approveBtn);
+  card.appendChild(actions);
+
+  stream.appendChild(card);
+  syncWelcomeVisibility();
+  stream.scrollTop = stream.scrollHeight;
+}
+
 function attachAssistantActions(div, text, stream) {
   if (!text || text.length <= 12) return;
   const actions = document.createElement("div");
@@ -2202,6 +2648,8 @@ async function handleChatPrompt(rawMessage) {
   let streamedText = "";
   let liveBodyEl = null;
 
+  const voiceSession = autoSpeakChat ? createRealtimeVoiceSession() : null;
+
   const onTokenChunk = (chunk) => {
     if (!liveBodyEl) {
       thinkingEl.innerHTML = "";
@@ -2219,6 +2667,7 @@ async function handleChatPrompt(rawMessage) {
       }
     }
     streamedText += chunk;
+    voiceSession?.pushTextToken(chunk);
     liveBodyEl.innerHTML = `${formatSimpleMarkdown(streamedText)}<span class="ai-caret"></span>`;
     if (stream) stream.scrollTop = stream.scrollHeight;
   };
@@ -2230,9 +2679,15 @@ async function handleChatPrompt(rawMessage) {
         message,
         history: chatHistory.slice(-8),
         enableAiForFiles,
+        streamVoice: Boolean(voiceSession?.useOfflineWav),
       },
-      onTokenChunk
+      onTokenChunk,
+      (wavB64) => voiceSession?.pushAudioBase64(wavB64)
     );
+    voiceSession?.finishStream();
+    if (autoSpeakChat && !streamedText.trim() && res.reply) {
+      speakText(res.reply);
+    }
 
     let historyContent = res.reply;
     if (res.attachment?.type === "files" && Array.isArray(res.attachment.files) && res.attachment.files.length > 0) {
@@ -2240,9 +2695,9 @@ async function handleChatPrompt(rawMessage) {
         .slice(0, 8)
         .map((f) => f.relativePath)
         .join(", ");
-      historyContent = `${res.reply}\n[File terlampir: ${topNames}]`.slice(0, 1450);
+      historyContent = `${res.reply}\n[File terlampir: ${topNames}]`.slice(0, 3800);
     }
-    chatHistory.push({ role: "assistant", content: historyContent.slice(0, 1450) });
+    chatHistory.push({ role: "assistant", content: historyContent.slice(0, 3800) });
 
     // Jika token sudah di-stream langsung dari Qwen 1.5B secara real-time, finalisasi di bubble yang sama!
     if (liveBodyEl && !res.attachment) {
@@ -2287,6 +2742,9 @@ async function handleChatPrompt(rawMessage) {
     } else if (res.attachment?.type === "sensitive_alert") {
       appendPaletteMessage("assistant", res.reply, null, false);
       appendSensitiveAlertCard(res.attachment);
+    } else if (res.attachment?.type === "command_approval") {
+      appendPaletteMessage("assistant", res.reply, null, false);
+      appendCommandApprovalCard(res.attachment);
     } else if (res.attachment?.type === "files") {
       appendPaletteMessage("assistant", res.reply, res.attachment.files, false);
     } else {
@@ -2479,8 +2937,236 @@ async function saveSettings(event) {
   }
 }
 
-function listenOnceForLiveVoice() {
+function extractWakeWordCommand(transcript) {
+  const clean = String(transcript || "").trim();
+  if (!clean) return null;
+
+  // Cocokkan berbagai pelafalan STT bahasa Indonesia untuk "Halo aiKu" / "Hai aiKu" / "aiKu ..."
+  const greetingWakeRe =
+    /\b(?:halo|hallo|hello|hai|hey|hei|oke|ok|oi)\s+(?:ai\s*ku|aiku|ay\s*ku|ayku|aiko|eiku|haiku|i\s*ku|iku)\b[,.:!\s-]*(.*)$/i;
+  const m1 = clean.match(greetingWakeRe);
+  if (m1) {
+    return { triggered: true, command: (m1[1] || "").trim() };
+  }
+
+  const directWakeRe = /^(?:ai\s*ku|aiku|ayku|aiko|eiku)\b[,.:!\s-]*(.*)$/i;
+  const m2 = clean.match(directWakeRe);
+  if (m2) {
+    return { triggered: true, command: (m2[1] || "").trim() };
+  }
+
+  return null;
+}
+
+function stopWakeWordListener() {
+  if (wakeWordRestartTimer) {
+    clearTimeout(wakeWordRestartTimer);
+    wakeWordRestartTimer = null;
+  }
+  if (wakeWordRecognition) {
+    try {
+      wakeWordRecognition.onend = null;
+      wakeWordRecognition.onerror = null;
+      wakeWordRecognition.onresult = null;
+      wakeWordRecognition.stop();
+    } catch {}
+    wakeWordRecognition = null;
+  }
+}
+
+function scheduleWakeWordRestart(delayMs = 500) {
+  if (!wakeWordEnabled || wakeWordBlockedByPermission || liveVoiceActive || voiceRecorder) return;
+  if (wakeWordRestartTimer) clearTimeout(wakeWordRestartTimer);
+  wakeWordRestartTimer = setTimeout(() => {
+    wakeWordRestartTimer = null;
+    startWakeWordListener();
+  }, delayMs);
+}
+
+function startWakeWordListener() {
+  if (!wakeWordEnabled || wakeWordBlockedByPermission || liveVoiceActive || voiceRecorder || wakeWordRecognition) {
+    return;
+  }
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRec) return;
+
+  try {
+    const rec = new SpeechRec();
+    wakeWordRecognition = rec;
+    rec.lang = "id-ID";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+
+    let wakeDebounceTimer = null;
+    let pendingWakeCommand = "";
+
+    const activateFromWakeWord = (cmd) => {
+      if (wakeDebounceTimer) {
+        clearTimeout(wakeDebounceTimer);
+        wakeDebounceTimer = null;
+      }
+      stopWakeWordListener();
+      playSoftChime();
+      liveVoiceActive = true;
+      if (cmd && cmd.length >= 3) {
+        void processLiveVoicePrompt(cmd);
+      } else {
+        listenOnceForLiveVoice('"Ya, ada apa? Aku mendengarkan..."');
+      }
+    };
+
+    rec.onresult = (ev) => {
+      if (liveVoiceActive || activeOfflineAudio) return;
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const res = ev.results[i];
+        const transcript = res?.[0]?.transcript || "";
+        const matched = extractWakeWordCommand(transcript);
+        if (!matched) continue;
+
+        if (res.isFinal) {
+          activateFromWakeWord(matched.command);
+          return;
+        }
+
+        // Jika masih berbicara kalimat setelah "Halo aiKu...", tunggu jeda 650ms agar perintahnya utuh
+        pendingWakeCommand = matched.command;
+        if (wakeDebounceTimer) clearTimeout(wakeDebounceTimer);
+        wakeDebounceTimer = setTimeout(() => {
+          activateFromWakeWord(pendingWakeCommand);
+        }, 650);
+      }
+    };
+
+    rec.onerror = (ev) => {
+      if (ev.error === "not-allowed" || ev.error === "service-not-allowed") {
+        wakeWordBlockedByPermission = true;
+        stopWakeWordListener();
+      }
+    };
+
+    rec.onend = () => {
+      if (wakeWordRecognition === rec) {
+        wakeWordRecognition = null;
+      }
+      if (wakeWordEnabled && !wakeWordBlockedByPermission && !liveVoiceActive && !voiceRecorder) {
+        scheduleWakeWordRestart(450);
+      }
+    };
+
+    rec.start();
+  } catch {
+    wakeWordRecognition = null;
+  }
+}
+
+async function processLiveVoicePrompt(rawSpoken) {
   if (!liveVoiceActive) return;
+  clearLiveListeningTimers();
+  stopLiveMicMeter();
+
+  const spoken = normalizeIndonesianSpokenText(rawSpoken);
+  if (!spoken) {
+    listenOnceForLiveVoice();
+    return;
+  }
+
+  // Perintah suara untuk menutup sesi Live Voice hands-free kembali ke siaga "Halo aiKu"
+  if (/^(?:stop|berhenti|cukup|selesai|sudah|makasih\s+aiku|terima\s+kasih\s+aiku|tidur\s+aiku)[!.]*$/i.test(spoken)) {
+    stopLiveVoice(false);
+    setIslandState("idle");
+    return;
+  }
+
+  const modelShort = formatShortModelName(latestStatusCache?.modelFileName);
+  chatHistory.push({ role: "user", content: spoken });
+  appendPaletteMessage("user", spoken);
+  showActiveCapsule(`"${spoken.slice(0, 44)}"`, `Live Voice • ${modelShort} berpikir...`);
+
+  let liveTranscript = "";
+  let startedSpeakingVisual = false;
+  const voiceSession = createRealtimeVoiceSession(() => {
+    if (liveVoiceActive) {
+      // Jeda 350ms agar sisa gema speaker laptop hilang total sebelum mikrofon mendengarkan lagi
+      setTimeout(() => {
+        if (liveVoiceActive) listenOnceForLiveVoice();
+      }, 350);
+    }
+  });
+
+  const markSpeaking = () => {
+    if (startedSpeakingVisual || !liveVoiceActive) return;
+    startedSpeakingVisual = true;
+    document.querySelector(".ai-orb")?.classList.add("speaking");
+    const subEl = document.getElementById("active-subtitle");
+    if (subEl) subEl.textContent = "Live Voice • aiKu berbicara (klik orb untuk menyela)";
+  };
+
+  try {
+    const res = await rpcStream(
+      "chat",
+      {
+        message: spoken,
+        history: chatHistory.slice(-8),
+        enableAiForFiles: document.getElementById("chk-ai-docs")?.checked ?? false,
+        streamVoice: Boolean(voiceSession.useOfflineWav),
+      },
+      (chunk) => {
+        if (!liveVoiceActive) return;
+        liveTranscript += chunk;
+        voiceSession.pushTextToken(chunk);
+        if (!voiceSession.useOfflineWav && liveTranscript.length >= 16) {
+          markSpeaking();
+        }
+        const titleEl = document.getElementById("active-title");
+        if (titleEl) {
+          titleEl.textContent = liveTranscript.trim().slice(-56);
+        }
+      },
+      (wavB64) => {
+        if (!liveVoiceActive) return;
+        markSpeaking();
+        voiceSession.pushAudioBase64(wavB64);
+      }
+    );
+
+    chatHistory.push({ role: "assistant", content: res.reply.slice(0, 3800) });
+    appendPaletteMessage("assistant", res.reply, res.attachment?.files ?? null, false);
+
+    if (res.attachment?.type === "plan" && res.attachment.plan) {
+      stopLiveVoice(false);
+      openInspectorWithPlan(res.attachment.plan, res.attachment.sandboxRoot);
+      speakText(res.reply);
+      return;
+    }
+
+    if (!liveTranscript.trim() && res.reply) {
+      markSpeaking();
+      speakText(res.reply, () => {
+        if (liveVoiceActive) listenOnceForLiveVoice();
+      });
+      return;
+    }
+
+    voiceSession.finishStream();
+  } catch (err) {
+    showToast(`Live Voice error: ${err}`, "err");
+    stopLiveVoice(true);
+  }
+}
+
+/**
+ * Mode Mendengarkan Akurat ala Gemini Live:
+ * - Eksklusif 1 jalur mikrofon (tanpa bentrok WASAPI) + maxAlternatives=3 + tunggu koreksi kalimat final (isFinal)!
+ * - Smart Adaptive Silence VAD: memberi ruang tarik napas 1.1-1.45 detik, lalu memicu finalisasi STT sebelum mengirim teks.
+ * - Auto-timeout tenang (14 detik sunyi -> kembali ke siaga "Halo aiKu").
+ */
+function listenOnceForLiveVoice(promptLabel = '"Silakan bicara..."') {
+  if (!liveVoiceActive) return;
+  stopWakeWordListener();
+  clearLiveListeningTimers();
+  stopLiveMicMeter();
+
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRec) {
     stopLiveVoice(true);
@@ -2489,77 +3175,148 @@ function listenOnceForLiveVoice() {
   }
 
   document.querySelector(".ai-orb")?.classList.remove("speaking");
-  showActiveCapsule('"Silakan bicara..."', "Live Voice • Mendengarkan (id-ID)");
+  showActiveCapsule(promptLabel, "Live Voice • Mendengarkan alami...");
+  pulseListeningOrbVisual(0.2);
 
   const recognition = new SpeechRec();
   activeRecognition = recognition;
   recognition.lang = "id-ID";
+  recognition.continuous = true;
   recognition.interimResults = true;
-  recognition.maxAlternatives = 1;
+  recognition.maxAlternatives = 3;
 
-  let finalText = "";
+  let committed = false;
+  let waitingFinalFlush = false;
+  let accumulatedFinal = "";
+  let latestInterim = "";
+
+  const finalizeAndSend = () => {
+    if (committed || !liveVoiceActive) return;
+    const fullSpoken = normalizeIndonesianSpokenText(`${accumulatedFinal} ${latestInterim}`);
+    if (!fullSpoken) return;
+    committed = true;
+    clearLiveListeningTimers();
+    stopLiveMicMeter();
+    if (activeRecognition === recognition) activeRecognition = null;
+    void processLiveVoicePrompt(fullSpoken);
+  };
+
+  const requestGracefulCommit = () => {
+    if (committed || waitingFinalFlush || !liveVoiceActive) return;
+    clearLiveListeningTimers();
+    // Jika masih ada kata interim yang belum difinalisasi oleh mesin STT, panggil stop() dulu
+    // dan tunggu event onend agar koreksi kalimat final (isFinal=true) masuk lebih dulu!
+    if (latestInterim) {
+      waitingFinalFlush = true;
+      const subEl = document.getElementById("active-subtitle");
+      if (subEl) subEl.textContent = "Live Voice • Menyempurnakan teks...";
+      try {
+        recognition.stop();
+      } catch {
+        finalizeAndSend();
+      }
+      // Pengaman jika onend tidak datang dalam 600ms
+      liveSilenceCommitTimer = setTimeout(() => {
+        finalizeAndSend();
+      }, 600);
+      return;
+    }
+    try {
+      recognition.onend = null;
+      recognition.stop();
+    } catch {}
+    finalizeAndSend();
+  };
+
+  // Jika 14 detik tidak ada suara sama sekali, tutup dengan tenang ke Idle Pill & kembali siaga "Halo aiKu"
+  liveIdleTimeoutTimer = setTimeout(() => {
+    if (!committed && liveVoiceActive && !accumulatedFinal && !latestInterim) {
+      stopLiveVoice(false);
+      setIslandState("idle");
+    }
+  }, 14_000);
+
+  recognition.onspeechstart = () => {
+    if (liveVoiceActive) pulseListeningOrbVisual(0.82);
+  };
+
+  recognition.onspeechend = () => {
+    if (liveVoiceActive) pulseListeningOrbVisual(0.25);
+  };
+
   recognition.onresult = (e) => {
-    const t = Array.from(e.results)
-      .map((r) => r[0].transcript)
-      .join("");
-    document.getElementById("active-title").textContent = `"${t}"`;
-    if (e.results[e.results.length - 1]?.isFinal) {
-      finalText = t.trim();
+    if (committed || !liveVoiceActive) return;
+
+    let finalPart = "";
+    let interimPart = "";
+    for (let i = 0; i < e.results.length; i++) {
+      const res = e.results[i];
+      if (!res) continue;
+      if (res.isFinal) {
+        finalPart += `${pickBestRecognitionAlternative(res)} `;
+      } else {
+        interimPart += res[0]?.transcript || "";
+      }
+    }
+
+    accumulatedFinal = finalPart.trim();
+    latestInterim = interimPart.trim();
+    const preview = normalizeIndonesianSpokenText(`${accumulatedFinal} ${latestInterim}`);
+
+    if (preview) {
+      if (liveIdleTimeoutTimer) {
+        clearTimeout(liveIdleTimeoutTimer);
+        liveIdleTimeoutTimer = null;
+      }
+      pulseListeningOrbVisual(latestInterim ? 0.78 : 0.42);
+      const titleEl = document.getElementById("active-title");
+      const subEl = document.getElementById("active-subtitle");
+      if (titleEl) titleEl.textContent = `"${preview.slice(-58)}"`;
+      if (subEl) subEl.textContent = "Live Voice • Mendengarkan...";
+
+      if (waitingFinalFlush) {
+        return;
+      }
+
+      // Smart Adaptive Silence VAD:
+      // Tunggu 1.1s jika segmen terakhir sudah isFinal, atau 1.45s jika masih interim agar tidak terpotong!
+      const lastWasFinal = Boolean(e.results[e.results.length - 1]?.isFinal);
+      const wordCount = preview.split(/\s+/).filter(Boolean).length;
+      const silenceMs = lastWasFinal && wordCount >= 3 ? 1100 : 1450;
+
+      if (liveSilenceCommitTimer) clearTimeout(liveSilenceCommitTimer);
+      liveSilenceCommitTimer = setTimeout(() => {
+        requestGracefulCommit();
+      }, silenceMs);
     }
   };
 
   recognition.onend = () => {
-    activeRecognition = null;
-    if (!liveVoiceActive) return;
+    if (activeRecognition === recognition) activeRecognition = null;
+    if (committed || !liveVoiceActive) return;
 
-    if (!finalText) {
-      // Belum ada suara -> dengarkan lagi selama mode Live masih aktif
-      setTimeout(() => listenOnceForLiveVoice(), 350);
+    const leftover = normalizeIndonesianSpokenText(`${accumulatedFinal} ${latestInterim}`);
+    if (leftover) {
+      finalizeAndSend();
       return;
     }
-
-    void (async () => {
-      const spoken = finalText;
-      chatHistory.push({ role: "user", content: spoken });
-      appendPaletteMessage("user", spoken);
-      showActiveCapsule(`"${spoken.slice(0, 40)}"`, "Live Voice • Qwen 0.5B berpikir...");
-
-      try {
-        const res = await rpc("chat", {
-          message: spoken,
-          history: chatHistory.slice(-6),
-          enableAiForFiles: document.getElementById("chk-ai-docs")?.checked ?? false,
-        });
-        chatHistory.push({ role: "assistant", content: res.reply });
-        appendPaletteMessage("assistant", res.reply, res.attachment?.files ?? null, false);
-
-        if (res.attachment?.type === "plan" && res.attachment.plan) {
-          stopLiveVoice(false);
-          openInspectorWithPlan(res.attachment.plan, res.attachment.sandboxRoot);
-          speakText(res.reply);
-          return;
-        }
-
-        if (!liveVoiceActive) return;
-        document.querySelector(".ai-orb")?.classList.add("speaking");
-        showActiveCapsule(res.reply.slice(0, 48), "Live Voice • aiKu berbicara...");
-        speakText(res.reply, () => {
-          if (liveVoiceActive) {
-            listenOnceForLiveVoice();
-          }
-        });
-      } catch (err) {
-        showToast(`Live Voice error: ${err}`, "err");
-        stopLiveVoice(true);
-      }
-    })();
+    setTimeout(() => {
+      if (liveVoiceActive && !committed) listenOnceForLiveVoice(promptLabel);
+    }, 300);
   };
 
   recognition.onerror = (ev) => {
-    activeRecognition = null;
-    if (!liveVoiceActive) return;
-    if (ev.error === "no-speech") {
-      setTimeout(() => listenOnceForLiveVoice(), 350);
+    if (activeRecognition === recognition) activeRecognition = null;
+    if (committed || !liveVoiceActive) return;
+    if (ev.error === "no-speech" || ev.error === "aborted") {
+      const leftover = normalizeIndonesianSpokenText(`${accumulatedFinal} ${latestInterim}`);
+      if (leftover) {
+        finalizeAndSend();
+      } else {
+        setTimeout(() => {
+          if (liveVoiceActive && !committed) listenOnceForLiveVoice(promptLabel);
+        }, 350);
+      }
     } else {
       showToast(`Mic error: ${ev.error}`, "err");
       stopLiveVoice(true);
@@ -2574,6 +3331,7 @@ function startVoiceInput() {
     stopLiveVoice(true);
     return;
   }
+  stopWakeWordListener();
   liveVoiceActive = true;
   listenOnceForLiveVoice();
 }
@@ -2607,6 +3365,11 @@ document.addEventListener("DOMContentLoaded", () => {
     void listen("ai-chat-chunk", (ev) => {
       if (typeof ev.payload === "string" && activeChunkHandler) {
         activeChunkHandler(ev.payload);
+      }
+    });
+    void listen("ai-audio-chunk", (ev) => {
+      if (typeof ev.payload === "string" && activeAudioChunkHandler) {
+        activeAudioChunkHandler(ev.payload);
       }
     });
   }
@@ -2672,6 +3435,14 @@ document.addEventListener("DOMContentLoaded", () => {
     e.stopPropagation();
     startVoiceInput();
   });
+  document.getElementById("active-voice-visual")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!liveVoiceActive) return;
+    // Tap-to-Interrupt (Barge-In ala Gemini Live): hentikan suara AI & langsung dengarkan lagi!
+    stopActiveSpeech();
+    document.querySelector(".ai-orb")?.classList.remove("speaking");
+    listenOnceForLiveVoice('"Ya, lanjutkan..."');
+  });
   document.getElementById("btn-active-stop").addEventListener("click", () => {
     if (activeNotifMode) {
       if (activeNotifTimer) clearTimeout(activeNotifTimer);
@@ -2702,6 +3473,21 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     void handleChatPrompt(val);
   });
+  const ttsToggleBtn = document.getElementById("btn-palette-tts");
+  if (ttsToggleBtn) {
+    ttsToggleBtn.classList.toggle("active", autoSpeakChat);
+    ttsToggleBtn.addEventListener("click", () => {
+      autoSpeakChat = !autoSpeakChat;
+      localStorage.setItem("aiku_auto_speak", autoSpeakChat ? "1" : "0");
+      ttsToggleBtn.classList.toggle("active", autoSpeakChat);
+      if (!autoSpeakChat) stopActiveSpeech();
+      showToast(
+        autoSpeakChat ? "Auto-Bicara Realtime Aktif" : "Auto-Bicara Dimatikan",
+        "info",
+        autoSpeakChat ? "Balasan chat akan langsung disuarakan per-kalimat" : ""
+      );
+    });
+  }
   document.getElementById("btn-palette-mic").addEventListener("click", startVoiceInput);
   document.getElementById("btn-open-inbox")?.addEventListener("click", () => {
     const panel = document.getElementById("inbox-panel");
@@ -2975,42 +3761,48 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("btn-voice-test")?.addEventListener("click", () => {
-    const mode = document.getElementById("voice-tts-mode")?.value || "clone";
+    const mode = document.getElementById("voice-tts-mode")?.value || "ava_hd";
     const profileId = document.getElementById("voice-profile-select")?.value || undefined;
-    const speed = Number.parseFloat(document.getElementById("voice-speed")?.value || "1.05") || 1.05;
+    const speed = Number.parseFloat(document.getElementById("voice-speed")?.value || "1.03") || 1.03;
     const testBtn = document.getElementById("btn-voice-test");
     const testLabel = document.getElementById("btn-voice-test-label");
 
-    if ((mode === "clone" || mode === "piper") && !latestStatusCache?.voiceStatus?.piperReady) {
-      showToast("Mesin suara offline belum terpasang. Klik 'Unduh Mesin Suara' terlebih dahulu.", "err");
+    if (mode === "piper" && !latestStatusCache?.voiceStatus?.piperReady) {
+      showToast("Mesin Piper offline belum terpasang. Klik 'Unduh Mesin Suara' atau gunakan mode Manusia HD.", "err");
       return;
     }
-    if (mode === "clone" && !profileId) {
-      showToast("Rekam 10 detik atau upload sampel suara dulu, atau pilih mode Piper Bahasa Indonesia.", "err");
-      return;
+    if (mode === "clone") {
+      if (!latestStatusCache?.voiceStatus?.openVoiceReady) {
+        showToast("Mesin OpenVoice ONNX belum terpasang. Klik 'Unduh Mesin Suara' untuk memakai Voice Clone.", "err");
+        return;
+      }
+      if (!profileId) {
+        showToast("Rekam 10 detik atau upload sampel suara dulu untuk memakai Custom Voice Clone.", "err");
+        return;
+      }
     }
 
     if (testBtn) testBtn.disabled = true;
     if (testLabel) testLabel.textContent = "Mensintesis...";
     speakText(
-      "Halo, ini adalah suara asisten lokal aiKu yang berjalan seratus persen offline di laptop Anda.",
+      "Halo Iqbal, sekarang aku berbicara dengan alunan napas dan intonasi yang jauh lebih hangat seperti manusia sehari-hari. Ada yang ingin kamu kerjakan hari ini?",
       () => {
         if (testBtn) testBtn.disabled = false;
         if (testLabel) testLabel.textContent = "Tes Suara";
       },
       { mode, profileId, speed }
     );
-    // Kembalikan tombol jika pemutaran berlangsung > 8 detik
+    // Kembalikan tombol jika pemutaran berlangsung > 11 detik
     setTimeout(() => {
       if (testBtn) testBtn.disabled = false;
       if (testLabel) testLabel.textContent = "Tes Suara";
-    }, 8500);
+    }, 11500);
   });
 
   document.getElementById("btn-voice-save-cfg")?.addEventListener("click", async () => {
-    const ttsMode = document.getElementById("voice-tts-mode")?.value || "system";
+    const ttsMode = document.getElementById("voice-tts-mode")?.value || "ava_hd";
     const activeProfileId = document.getElementById("voice-profile-select")?.value || null;
-    const voiceSpeed = Number.parseFloat(document.getElementById("voice-speed")?.value || "1.05") || 1.05;
+    const voiceSpeed = Number.parseFloat(document.getElementById("voice-speed")?.value || "1.03") || 1.03;
     const saveBtn = document.getElementById("btn-voice-save-cfg");
 
     if (saveBtn) {
@@ -3032,12 +3824,8 @@ document.addEventListener("DOMContentLoaded", () => {
         };
         populateVoiceStudio(latestStatusCache.voiceStatus);
       }
-      showIslandNotification(
-        "Mode Suara Tersimpan",
-        `Aktif: ${ttsMode === "clone" ? "Custom Voice Clone Offline" : ttsMode === "piper" ? "Piper ID Offline" : "Sistem Windows"}`,
-        "ok",
-        true
-      );
+      const modeLabel = describeVoiceModeLabel(ttsMode);
+      showIslandNotification("Mode Suara Tersimpan", `Aktif: ${modeLabel}`, "ok", true);
       void refreshStatus();
     } catch (err) {
       showToast(`Gagal menyimpan mode suara: ${err}`, "err");
@@ -3211,6 +3999,23 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Escape") setIslandState("idle");
   });
 
+  const wakeChk = document.getElementById("chk-wake-word");
+  if (wakeChk) {
+    wakeChk.checked = wakeWordEnabled;
+    wakeChk.addEventListener("change", () => {
+      wakeWordEnabled = Boolean(wakeChk.checked);
+      localStorage.setItem("aiku_wake_word", wakeWordEnabled ? "1" : "0");
+      if (wakeWordEnabled) {
+        wakeWordBlockedByPermission = false;
+        startWakeWordListener();
+        showToast('Siaga suara "Halo aiKu" diaktifkan!', "ok");
+      } else {
+        stopWakeWordListener();
+        showToast('Siaga suara "Halo aiKu" dimatikan.', "info");
+      }
+    });
+  }
+
   // Aktifkan fisika karet elastis (tarik tepian Dynamic Island!)
   initElasticJellyPhysics();
 
@@ -3222,8 +4027,21 @@ document.addEventListener("DOMContentLoaded", () => {
   runBootWelcomeAnimation();
   trackHitBoxForMs(3000);
   void refreshStatus();
-  // Pre-warm Qwen 1.5B + preload System Prompt KV-Cache sejak awal agar chat pertama langsung ~100ms!
+  // Pre-warm Qwen + preload System Prompt KV-Cache sejak awal agar chat pertama langsung responsif!
   setTimeout(() => {
     void rpc("warmupModel").catch(() => {});
   }, 400);
+
+  // Mulai siaga Wake Word "Halo aiKu" otomatis (tanpa klik tombol mic!)
+  if (wakeWordEnabled) {
+    setTimeout(() => startWakeWordListener(), 1200);
+    // Fallback jika browser menahan mikrofon sebelum ada 1 interaksi awal di tab
+    const armWakeOnGesture = () => {
+      if (wakeWordEnabled && !wakeWordRecognition && !liveVoiceActive) {
+        startWakeWordListener();
+      }
+    };
+    window.addEventListener("pointerdown", armWakeOnGesture, { once: true });
+    window.addEventListener("keydown", armWakeOnGesture, { once: true });
+  }
 });

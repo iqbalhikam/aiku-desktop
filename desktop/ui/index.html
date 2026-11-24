@@ -104,6 +104,12 @@
                 placeholder="Ask AI, hitung, cari file, atau ketik perintah..."
                 autocomplete="off"
               />
+              <button id="btn-palette-tts" type="button" class="icon-btn-tiny icon-btn-tts" title="Auto-Bicara Realtime (Balas dengan Suara)">
+                <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" fill-opacity="0.18" />
+                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14" />
+                </svg>
+              </button>
               <button id="btn-palette-mic" type="button" class="icon-btn-tiny icon-btn-mic" title="Ngobrol Live (Suara)">
                 <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
                   <rect x="9" y="2" width="6" height="11" rx="3" fill="currentColor" fill-opacity="0.22" />
@@ -480,7 +486,9 @@
                     <option value="1">1</option>
                     <option value="2">2</option>
                     <option value="3">3</option>
-                    <option value="4" selected>4 (Max)</option>
+                    <option value="4" selected>4 (Standar)</option>
+                    <option value="6">6 (Cepat 3B)</option>
+                    <option value="8">8 (Turbo 3B)</option>
                   </select>
                 </div>
               </div>
@@ -628,9 +636,13 @@
                 <div class="field-group">
                   <label class="field-label mono" for="voice-tts-mode">Mode Suara AI</label>
                   <select id="voice-tts-mode" class="full-select">
-                    <option value="clone">Custom Voice Clone (Offline)</option>
-                    <option value="piper">Piper Bahasa Indonesia (Offline)</option>
-                    <option value="system">Suara Sistem Windows (Bawaan)</option>
+                    <option value="ava_hd">Manusia HD — Ava Conversational (Wanita)</option>
+                    <option value="andrew_hd">Manusia HD — Andrew Conversational (Pria)</option>
+                    <option value="gadis_hd">Manusia HD — Gadis Indonesia (Wanita)</option>
+                    <option value="ardi_hd">Manusia HD — Ardi Indonesia (Pria)</option>
+                    <option value="clone">Custom Voice Clone + Intonasi Manusia</option>
+                    <option value="piper">Piper Offline Murni (Tanpa Internet)</option>
+                    <option value="system">Suara Sistem Windows (SAPI5)</option>
                   </select>
                 </div>
 
@@ -656,14 +668,19 @@
                 <div class="field-group">
                   <label class="field-label mono" for="voice-speed">Kecepatan</label>
                   <select id="voice-speed" class="full-select">
-                    <option value="0.9">0.90x (Tenang)</option>
+                    <option value="0.92">0.92x (Tenang)</option>
                     <option value="1">1.00x (Normal)</option>
-                    <option value="1.05" selected>1.05x (Natural)</option>
-                    <option value="1.15">1.15x (Responsif)</option>
-                    <option value="1.25">1.25x (Cepat)</option>
+                    <option value="1.03" selected>1.03x (Natural Manusia)</option>
+                    <option value="1.12">1.12x (Responsif)</option>
+                    <option value="1.22">1.22x (Cepat)</option>
                   </select>
                 </div>
               </div>
+
+              <label class="checkbox-row mono" style="margin-top: 8px">
+                <input id="chk-wake-word" type="checkbox" checked />
+                <span>Panggil Tanpa Klik ("Halo aiKu" — selalu siaga di latar belakang)</span>
+              </label>
 
               <div class="voice-sample-card">
                 <div class="voice-script-hint">

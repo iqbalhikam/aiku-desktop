@@ -25,7 +25,7 @@ import {
   isModelDownloaded,
 } from "./model-downloader.js";
 
-const MAX_ALLOWED_CPU_THREADS = 4;
+const MAX_ALLOWED_CPU_THREADS = 8;
 
 export interface ChatHistoryTurn {
   role: "user" | "assistant";
@@ -51,6 +51,7 @@ export interface LlmInferenceClient {
     history: readonly ChatHistoryTurn[];
     sandboxContextSummary?: string;
     liveContext?: string;
+    maxTokensOverride?: number;
     stateless?: boolean;
     onToken?: (chunk: string) => void;
   }): Promise<string>;
@@ -61,17 +62,27 @@ export interface LocalLlamaEngineOptions {
   onDownloadProgress?: (progress: DownloadProgress) => void;
 }
 
-const IDLE_UNLOAD_MS = 180_000;
+const IDLE_UNLOAD_MS = 240_000;
 
 /**
- * Persona & Instruksi Sistem Asisten Pribadi aiKu (Statis di KV-Cache prefix ke-0).
+ * System Prompt Agentik Penuh untuk aiKu (Mendukung Qwen 2.5 3B Full Desktop Agent).
+ * Tetap 100% statis pada posisi prefix ke-0 sehingga selalu tertahan hangat di KV-Cache!
  */
 const STATIC_CHAT_SYSTEM_PROMPT = [
-  "Kamu adalah aiKu, asisten pribadi cerdas, hangat, dan akrab di Windows 11.",
-  "ATURAN PENTING:",
-  "1. Gunakan gaya bicara asisten pribadi yang akrab ('aku' dan 'kamu' / sapa nama pemilik di [INFO]), santai tapi sopan, 1-3 kalimat paragraf utuh Bahasa Indonesia. JANGAN mengulang kalimat balasan sebelumnya, JANGAN buat daftar bernomor panjang, dan JANGAN tutup dengan basa-basi robotik.",
-  "2. Selalu nyambung dengan obrolan sebelumnya dan fakta di [INFO]. Jika ditanya 'apa aja salah satunya?' atau 'salah satu file itu namanya apa?', LANGSUNG jawab santai menyebutkan 1-2 nama file/folder asli dari [INFO] atau chat sebelumnya.",
-  "3. HANYA saat diminta membuka aplikasi/web/pencarian, tulis 1 kalimat ramah lalu akhiri dengan tag: [OPEN_CHROME: url] | [OPEN_WEB: url] | [SEARCH_YT: kueri] | [SEARCH_WEB: kueri] | [OPEN_APP: chrome|edge|vscode|spotify|notepad|calculator|whatsapp|explorer|settings|taskmgr|paint].",
+  "Namamu adalah aiKu (dibaca 'aiku'), asisten pribadi AI otonom yang cerdas, hangat, dan serbabisa di Windows 11 milik pengguna. Kamu tahu persis bahwa namamu adalah aiKu; jika dipanggil 'halo aiku' atau ditanya siapa namamu, jawab akrab sebagai aiKu.",
+  "GAYA & KAPASITAS JAWABAN:",
+  "1. Jawab langsung ke inti dengan Bahasa Indonesia lisan yang santai, spontan, dan akrab ('aku' dan 'kamu'). JANGAN mengulang pembuka klise seperti 'Oke Iqbal' atau memanggil nama pengguna di setiap jawaban — cukup bicara alami seperti teman mengobrol.",
+  "2. Sesuaikan panjang jawaban secara cerdas: untuk obrolan ringan atau konfirmasi aksi jawab ringkas (1-3 kalimat), NAMUN untuk koding, pembuatan dokumen/surat/artikel, analisis file, daftar langkah, atau penjelasan mendalam, tulis jawaban LENGKAP dan TUNTAS tanpa dipotong.",
+  "3. Kamu MEMILIKI akses penuh ke alat desktop di bawah ini. JANGAN PERNAH berkata tidak bisa mengakses komputer, aplikasi, file, pengaturan layar/suara, atau terminal!",
+  "4. RISET LATAR BELAKANG (TANPA BUKA BROWSER): Saat ada <LIVE_WEB_DATA> di konteks, langsung bacakan dan rangkum isi, fakta, dan angka pentingnya secara tuntas ke pengguna. DILARANG menyuruh pengguna 'baca di sini' atau 'cek link ini', dan DILARANG membuka browser kecuali pengguna secara eksplisit meminta buka browser/Chrome/YouTube/situs!",
+  "ALAT AKSI DESKTOP (tulis kalimat pengantar ramah ke pengguna dulu, lalu taruh tag di baris paling akhir HANYA saat aksi tersebut diminta):",
+  "- Buka aplikasi apa saja di laptop -> Contoh: Siap, aku bukakan Discord! [OPEN_APP: discord]",
+  "- Buka file/subfolder lokal -> Contoh: Aku bukakan filenya sekarang. [OPEN_FILE: Aktifitas.docx]",
+  "- Buka web/YouTube (HANYA jika pengguna eksplisit minta buka browser/situs/lagu) -> [OPEN_CHROME: https://youtube.com] | [OPEN_WEB: url] | [SEARCH_YT: kata kunci]",
+  "- Kontrol sistem -> [SYS_CONTROL: volume_up | volume_down | mute | brightness_up | brightness_down | screenshot] | [SET_BRIGHTNESS: 70]",
+  "- Buat folder baru -> [CREATE_FOLDER: Nama_Folder]",
+  '- Buat/simpan file baru (JANGAN bungkus dengan kurung siku!) -> Contoh: Ini file jadwal.md yang sudah kubuatkan:\n<write_file path="jadwal.md"># Jadwal Belajar\n- Hari 1: Dasar</write_file>',
+  "- Jalankan perintah PowerShell sistem -> Contoh: Aku siapkan perintah PowerShell-nya, klik Setujui di bawah untuk menjalankan:\n[RUN_CMD: Get-Process | Sort-Object WS -Descending | Select-Object -First 3 Name, WS]",
 ].join("\n");
 
 export class LocalLlamaEngine implements LlmInferenceClient {
@@ -90,6 +101,10 @@ export class LocalLlamaEngine implements LlmInferenceClient {
   constructor(options: LocalLlamaEngineOptions) {
     this.llmConfig = options.llmConfig;
     this.onDownloadProgress = options.onDownloadProgress;
+  }
+
+  public isLargeCapableModel(): boolean {
+    return /\b(3b|4b|7b|8b|gemma-2-2b)\b/i.test(this.llmConfig.modelFileName);
   }
 
   public async warmupModel(): Promise<boolean> {
@@ -142,6 +157,10 @@ export class LocalLlamaEngine implements LlmInferenceClient {
     }
 
     const effectiveThreads = Math.min(Math.max(1, this.llmConfig.threads), MAX_ALLOWED_CPU_THREADS);
+    const targetContextSize = this.isLargeCapableModel()
+      ? 4096
+      : Math.min(Math.max(this.llmConfig.contextSize, 2048), 2048);
+
     this.loadingPromise = (async () => {
       await this.disposeNow();
       this.cachedLlama = await getLlama({
@@ -154,7 +173,7 @@ export class LocalLlamaEngine implements LlmInferenceClient {
         gpuLayers: 0,
       });
       this.cachedContext = await this.cachedModel.createContext({
-        contextSize: Math.min(Math.max(this.llmConfig.contextSize, 2048), 2048),
+        contextSize: targetContextSize,
         batchSize: 512,
         sequences: 2,
         flashAttention: true,
@@ -298,6 +317,7 @@ export class LocalLlamaEngine implements LlmInferenceClient {
     history: readonly ChatHistoryTurn[];
     sandboxContextSummary?: string;
     liveContext?: string;
+    maxTokensOverride?: number;
     stateless?: boolean;
     onToken?: (chunk: string) => void;
   }): Promise<string> {
@@ -307,7 +327,7 @@ export class LocalLlamaEngine implements LlmInferenceClient {
           input.sandboxContextSummary ??
           "Kamu adalah asisten berbahasa Indonesia yang ringkas dan akurat.",
         userPrompt: input.message.slice(0, 3500),
-        maxTokens: 220,
+        maxTokens: input.maxTokensOverride ?? 320,
       });
     }
 
@@ -317,6 +337,7 @@ export class LocalLlamaEngine implements LlmInferenceClient {
       throw new Error("Sesi chat model lokal gagal disiapkan.");
     }
 
+    const is3B = this.isLargeCapableModel();
     const cleanMsg = input.message.trim();
     let priorTurns = input.history;
     if (
@@ -327,40 +348,43 @@ export class LocalLlamaEngine implements LlmInferenceClient {
       priorTurns = priorTurns.slice(0, -1);
     }
 
-    // PERTAHANKAN KV-CACHE APPEND-ONLY!
-    // Hanya resync setChatHistory jika ada giliran dari luar (mis. Gemini Cloud atau reload setelah idle 3 menit)
+    // Pertahankan KV-Cache append-only agar respons tetap secepat kilat
     const expectedPriorPairs = Math.floor(priorTurns.length / 2);
     if (priorTurns.length === 0 && this.sessionTurnCount > 0) {
       this.chatSession.resetChatHistory();
       this.sessionTurnCount = 0;
     } else if (expectedPriorPairs > this.sessionTurnCount) {
       const syncedItems: ChatHistoryItem[] = [{ type: "system", text: STATIC_CHAT_SYSTEM_PROMPT }];
-      for (const turn of priorTurns.slice(-6)) {
+      for (const turn of priorTurns.slice(-8)) {
         if (turn.role === "user") {
-          syncedItems.push({ type: "user", text: turn.content.slice(0, 600) });
+          syncedItems.push({ type: "user", text: turn.content.slice(0, 1200) });
         } else {
-          syncedItems.push({ type: "model", response: [turn.content.slice(0, 700)] });
+          syncedItems.push({ type: "model", response: [turn.content.slice(0, 1500)] });
         }
       }
       this.chatSession.setChatHistory(syncedItems);
       this.sessionTurnCount = expectedPriorPairs;
     }
 
+    const maxInputChars = is3B ? 2400 : 900;
     const promptForModel = input.liveContext
-      ? `[INFO: ${input.liveContext}]\n${cleanMsg.slice(0, 800)}`
-      : cleanMsg.slice(0, 900);
+      ? `[INFO: ${input.liveContext}]\n${cleanMsg.slice(0, maxInputChars)}`
+      : cleanMsg.slice(0, maxInputChars);
+
+    const defaultMaxTokens = is3B ? 1100 : 240;
+    const effectiveMaxTokens = input.maxTokensOverride ?? defaultMaxTokens;
 
     try {
       const response = await this.chatSession.prompt(promptForModel, {
         temperature: 0.35,
-        topK: 20,
-        topP: 0.86,
-        minP: 0.06,
+        topK: 25,
+        topP: 0.88,
+        minP: 0.05,
         repeatPenalty: {
-          penalty: 1.08,
-          lastTokens: 40,
+          penalty: 1.07,
+          lastTokens: 48,
         },
-        maxTokens: 145,
+        maxTokens: effectiveMaxTokens,
         ...(input.onToken
           ? {
               onTextChunk: (chunk: string) => {

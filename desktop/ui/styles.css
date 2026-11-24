@@ -493,6 +493,17 @@ body {
   box-shadow: 0 0 12px rgba(255, 255, 255, 0.22);
   display: grid;
   place-items: center;
+  transition: transform 0.08s ease-out, box-shadow 0.1s ease-out;
+}
+.ai-orb.listening {
+  transform: scale(calc(1 + var(--mic-level, 0) * 0.24));
+  box-shadow: 0 0 calc(10px + var(--mic-level, 0) * 18px) rgba(255, 255, 255, calc(0.22 + var(--mic-level, 0) * 0.45));
+}
+.ai-orb.speaking {
+  box-shadow: 0 0 18px rgba(244, 244, 245, 0.42);
+}
+#active-voice-visual {
+  cursor: pointer;
 }
 .orb-core {
   width: 9px;
@@ -2148,4 +2159,56 @@ body {
   font-size: 10px;
   color: #a1a1aa;
 }
+
+.icon-btn-tts.active {
+  color: #09090b;
+  background: #f4f4f5;
+  border-color: #ffffff;
+}
+
+/* Fenced Code Blocks & Terminal Output (Qwen 3B Agent) */
+.ai-code-wrap {
+  margin: 6px 0;
+  border-radius: 9px;
+  background: #070709;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.ai-code-lang {
+  padding: 3px 9px;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #a1a1aa;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.ai-code-block {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #e4e4e7;
+  overflow-x: auto;
+  white-space: pre;
+  user-select: text;
+}
+
+.cmd-output-box {
+  margin-top: 6px;
+  padding: 7px 9px;
+  max-height: 150px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #060608;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #d4d4d8;
+  font-size: 10.5px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
 

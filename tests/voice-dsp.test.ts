@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { resolveAppConfig } from "../src/config/schema.js";
-import { cleanTextForSpeech } from "../src/core/voice/voice-clone-engine.js";
+import {
+  cleanTextForSpeech,
+  splitTextIntoRealtimeSpeechClauses,
+  StreamingSpeechClauseAccumulator,
+} from "../src/core/voice/voice-clone-engine.js";
 import {
   computeOpenVoiceSpectrogram,
   decodeWavBuffer,
@@ -79,14 +83,36 @@ describe("Offline Voice Clone DSP & Config Schema", () => {
     expect(spec.timeFirst[t * 513 + f]).toBeCloseTo(spec.freqFirst[f * expectedFrames + t]!, 6);
   });
 
-  it("maintains backward compatibility on AppConfigSchema and cleans speech text", () => {
+  it("maintains backward compatibility on AppConfigSchema and splits realtime speech clauses on full sentences", () => {
     const cfg = resolveAppConfig({
       allowedDirectories: ["./sandbox"],
     });
-    expect(cfg.voice.ttsMode).toBe("system");
-    expect(cfg.voice.speed).toBe(1.05);
+    expect(cfg.voice.ttsMode).toBe("ava_hd");
+    expect(cfg.voice.speed).toBe(1.03);
     expect(cleanTextForSpeech("Halo **Iqbal**! [OPEN_CHROME: https://youtube.com] Diskon 50%.")).toBe(
       "Halo Iqbal! Diskon 50 persen ."
     );
+    expect(cleanTextForSpeech("1. Buka aplikasi\n2. Simpan catatan")).toBe(
+      "Buka aplikasi. Simpan catatan"
+    );
+
+    const clauses = splitTextIntoRealtimeSpeechClauses(
+      "Halo Iqbal, senang bertemu lagi hari ini! Cuaca sedang cerah, jadi semua pekerjaan kamu sudah siap dijalankan sekarang."
+    );
+    expect(clauses).toEqual([
+      "Halo Iqbal, senang bertemu lagi hari ini!",
+      "Cuaca sedang cerah, jadi semua pekerjaan kamu sudah siap dijalankan sekarang.",
+    ]);
+
+    const streamed: string[] = [];
+    const acc = new StreamingSpeechClauseAccumulator((c) => streamed.push(c));
+    acc.pushTokenChunk("Siap Iqbal, aku bantu ");
+    acc.pushTokenChunk("sekarang juga! ");
+    acc.pushTokenChunk("Ini kalimat keduanya, mengalir mulus tanpa jeda patah.");
+    acc.flush();
+    expect(streamed).toEqual([
+      "Siap Iqbal, aku bantu sekarang juga!",
+      "Ini kalimat keduanya, mengalir mulus tanpa jeda patah.",
+    ]);
   });
 });

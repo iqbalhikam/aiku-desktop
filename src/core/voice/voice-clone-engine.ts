@@ -1,10 +1,12 @@
-import { spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 import * as ort from "onnxruntime-node";
 import { z } from "zod";
+import { HUMAN_VOICE_PRESETS, HumanConversationalTtsClient, type HumanVoicePresetId } from "./human-tts.js";
 import {
   checkVoiceEngineInstalled,
   ensureVoiceEngineDownloaded,
@@ -20,6 +22,16 @@ import {
   prepareReferenceVoiceSamples,
   resampleAudio,
 } from "./wav-dsp.js";
+
+export type TtsModeOption =
+  | "ava_hd"
+  | "andrew_hd"
+  | "gadis_hd"
+  | "ardi_hd"
+  | "natural"
+  | "clone"
+  | "piper"
+  | "system";
 
 const StoredVoiceProfileSchema = z
   .object({
@@ -44,52 +56,259 @@ export interface VoiceStatusSummary {
   piperReady: boolean;
   openVoiceReady: boolean;
   fullyReady: boolean;
-  ttsMode: "system" | "piper" | "clone";
+  ttsMode: TtsModeOption;
   activeProfileId: string | null;
   speed: number;
   profiles: PublicVoiceProfile[];
   activeSetup: VoiceSetupProgress | null;
 }
 
+/**
+ * Membersihkan simbol tulisan/markdown agar saat diucapkan terdengar alami seperti lisan manusia
+ * (tanpa membaca angka poin "1.", bintang markdown, atau simbol kode).
+ */
 export function cleanTextForSpeech(raw: string): string {
   return raw
-    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/```[\s\S]*?```/g, " Berikut kodenya. ")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/\*([^*]+)\*/g, "$1")
     .replace(/\[[A-Z_]+:[^\]]*\]/g, " ")
+    .replace(/<write_file[\s\S]*?<\/write_file>/gi, " Filenya sudah kusimpan. ")
+    .replace(/(?:^|\n)\s*\d+[.)]\s+/g, ". ")
+    .replace(/(?:^|\n)\s*[-•*]\s+/g, ", ")
     .replace(/https?:\/\/\S+/g, " tautan web ")
     .replace(/%/g, " persen ")
     .replace(/[#>_~|]/g, " ")
+    .replace(/\s*\.\s*\./g, ".")
     .replace(/\s+/g, " ")
+    .replace(/^[.,;\s]+/, "")
     .trim()
-    .slice(0, 900);
+    .slice(0, 950);
+}
+
+/**
+ * Memecah teks HANYA pada batas kalimat utuh (., !, ?) — TIDAK memotong di tanda koma (,)
+ * agar alunan napas dan naik-turun intonasi kalimat terdengar natural seperti manusia berbicara!
+ */
+export function splitTextIntoRealtimeSpeechClauses(rawText: string): string[] {
+  const cleaned = cleanTextForSpeech(rawText);
+  if (!cleaned) return [];
+
+  const clauses: string[] = [];
+  let buffer = "";
+
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i]!;
+    buffer += ch;
+    const nextCh = cleaned[i + 1] ?? " ";
+    const minLen = clauses.length === 0 ? 16 : 36;
+
+    const isSentenceEnd = (ch === "." || ch === "!" || ch === "?") && /\s/.test(nextCh);
+    const isVeryLongSemi = (ch === ";" || ch === ":") && /\s/.test(nextCh) && buffer.trim().length >= 110;
+
+    if ((isSentenceEnd && buffer.trim().length >= minLen) || isVeryLongSemi) {
+      clauses.push(buffer.trim());
+      buffer = "";
+    }
+  }
+
+  if (buffer.trim().length > 0) {
+    if (clauses.length > 0 && buffer.trim().length < 12) {
+      clauses[clauses.length - 1] = `${clauses[clauses.length - 1]} ${buffer.trim()}`;
+    } else {
+      clauses.push(buffer.trim());
+    }
+  }
+
+  return clauses;
+}
+
+/**
+ * Akumulator streaming token -> hanya memotong pada akhir kalimat utuh (., !, ?, \n)
+ * sehingga prosodi & intonasi suara mengalir mulus tanpa terputus kaku di tengah kalimat!
+ */
+export class StreamingSpeechClauseAccumulator {
+  private buffer = "";
+  private insideCodeFence = false;
+  private emittedCount = 0;
+  private readonly onClause: (clause: string) => void;
+
+  constructor(onClause: (clause: string) => void) {
+    this.onClause = onClause;
+  }
+
+  public pushTokenChunk(chunk: string): void {
+    this.buffer += chunk;
+
+    while (this.buffer.includes("```")) {
+      const idx = this.buffer.indexOf("```");
+      if (!this.insideCodeFence) {
+        const before = this.buffer.slice(0, idx).trim();
+        if (before.length >= 4) {
+          this.emitClean(before);
+        }
+        this.buffer = this.buffer.slice(idx + 3);
+        this.insideCodeFence = true;
+      } else {
+        this.buffer = this.buffer.slice(idx + 3);
+        this.insideCodeFence = false;
+      }
+    }
+
+    if (this.insideCodeFence) {
+      return;
+    }
+
+    const minSentenceLen = this.emittedCount === 0 ? 16 : 36;
+    let cutIdx = -1;
+
+    for (let i = 0; i < this.buffer.length - 1; i++) {
+      const ch = this.buffer[i]!;
+      const next = this.buffer[i + 1]!;
+      if (ch === "\n" && i >= minSentenceLen) {
+        cutIdx = i + 1;
+        break;
+      }
+      if ((ch === "." || ch === "!" || ch === "?") && /\s/.test(next) && i >= minSentenceLen) {
+        cutIdx = i + 1;
+        break;
+      }
+      if ((ch === ";" || ch === ":") && /\s/.test(next) && i >= 115) {
+        cutIdx = i + 1;
+        break;
+      }
+    }
+
+    if (cutIdx > 0) {
+      const candidate = this.buffer.slice(0, cutIdx);
+      this.buffer = this.buffer.slice(cutIdx);
+      this.emitClean(candidate);
+    }
+  }
+
+  public flush(): void {
+    if (!this.insideCodeFence && this.buffer.trim().length > 0) {
+      this.emitClean(this.buffer);
+    }
+    this.buffer = "";
+  }
+
+  private emitClean(raw: string): void {
+    const cleaned = cleanTextForSpeech(raw);
+    if (cleaned.length >= 2) {
+      this.emittedCount += 1;
+      this.onClause(cleaned);
+    }
+  }
+}
+
+interface HotPiperDaemon {
+  child: ChildProcessWithoutNullStreams;
+  rl: readline.Interface;
+  lengthScale: string;
+}
+
+function mapModeToHumanPreset(mode: TtsModeOption): HumanVoicePresetId | null {
+  if (mode === "ava_hd" || mode === "natural") return "ava_hd";
+  if (mode === "andrew_hd") return "andrew_hd";
+  if (mode === "gadis_hd") return "gadis_hd";
+  if (mode === "ardi_hd") return "ardi_hd";
+  return null;
 }
 
 export class OfflineVoiceCloneEngine {
   private modelsDir: string;
   private threads: number;
+  private readonly humanTts = new HumanConversationalTtsClient();
   private extractSession: ort.InferenceSession | null = null;
   private colorSession: ort.InferenceSession | null = null;
-  private cachedBasePiperEmbedding: Float32Array | null = null;
+  private cachedBaseEmbeddings = new Map<string, Float32Array>();
+  private cachedTargetProfiles = new Map<string, Float32Array>();
+  private hotPiper: HotPiperDaemon | null = null;
+  private piperJobChain: Promise<unknown> = Promise.resolve();
   private activeSetup: VoiceSetupProgress | null = null;
   private setupPromise: Promise<void> | null = null;
+  private warmupPromise: Promise<void> | null = null;
 
   constructor(options: { modelsDir: string; threads?: number }) {
     this.modelsDir = path.resolve(options.modelsDir);
-    this.threads = Math.min(4, Math.max(1, options.threads ?? 4));
+    this.threads = Math.min(8, Math.max(4, options.threads ?? 6));
   }
 
   public updateOptions(options: { modelsDir: string; threads: number }): void {
     const nextDir = path.resolve(options.modelsDir);
-    const nextThreads = Math.min(4, Math.max(1, options.threads));
+    const nextThreads = Math.min(8, Math.max(4, options.threads));
     if (nextDir !== this.modelsDir || nextThreads !== this.threads) {
       this.modelsDir = nextDir;
       this.threads = nextThreads;
       this.extractSession = null;
       this.colorSession = null;
-      this.cachedBasePiperEmbedding = null;
+      this.cachedBaseEmbeddings.clear();
+      this.cachedTargetProfiles.clear();
+      this.disposeHotPiper();
     }
+  }
+
+  public disposeHotPiper(): void {
+    this.humanTts.dispose();
+    if (this.hotPiper) {
+      try {
+        this.hotPiper.rl.close();
+        this.hotPiper.child.kill();
+      } catch {
+        // Abaikan
+      }
+      this.hotPiper = null;
+    }
+  }
+
+  public async warmupEngine(activeProfileId?: string): Promise<void> {
+    if (this.warmupPromise) return this.warmupPromise;
+
+    this.warmupPromise = (async () => {
+      try {
+        const installed = await checkVoiceEngineInstalled(this.modelsDir);
+        if (!installed.piperReady) return;
+
+        const warmBuf = await this.synthesizeBasePiperWav("siap", 1.03);
+
+        if (installed.openVoiceReady) {
+          const session = await this.ensureColorSession();
+          const decoded = decodeWavBuffer(warmBuf);
+          const samples22k = resampleAudio(decoded.samples, decoded.sampleRate, OPENVOICE_SAMPLE_RATE);
+          const srcVec = await this.getOrExtractBaseEmbedding("piper_base_se", samples22k);
+          if (activeProfileId) {
+            await this.getTargetEmbeddingCached(activeProfileId).catch(() => {});
+          }
+          const dummyFrames = 32;
+          const specT = new ort.Tensor("float32", new Float32Array(OPENVOICE_FREQ_BINS * dummyFrames), [
+            1,
+            OPENVOICE_FREQ_BINS,
+            dummyFrames,
+          ]);
+          const lenT = new ort.Tensor("int64", BigInt64Array.from([BigInt(dummyFrames)]), [1]);
+          const seT = new ort.Tensor("float32", srcVec, [1, 256, 1]);
+          const tauT = new ort.Tensor("float32", Float32Array.from([0.3]), [1]);
+          const feeds: Record<string, ort.Tensor> = {};
+          for (const name of session.inputNames) {
+            const l = name.toLowerCase();
+            if (l.includes("len")) feeds[name] = lenT;
+            else if (l.includes("src") || l.includes("source") || l.includes("dest") || l.includes("target"))
+              feeds[name] = seT;
+            else if (l === "tau") feeds[name] = tauT;
+            else feeds[name] = specT;
+          }
+          await session.run(feeds);
+        }
+      } catch {
+        // Abaikan kendala pre-warm latar belakang
+      } finally {
+        this.warmupPromise = null;
+      }
+    })();
+
+    return this.warmupPromise;
   }
 
   public getActiveSetup(): VoiceSetupProgress | null {
@@ -97,7 +316,7 @@ export class OfflineVoiceCloneEngine {
   }
 
   public async getStatus(voiceConfig: {
-    ttsMode: "system" | "piper" | "clone";
+    ttsMode: TtsModeOption;
     activeProfileId?: string | undefined;
     speed: number;
   }): Promise<VoiceStatusSummary> {
@@ -106,9 +325,12 @@ export class OfflineVoiceCloneEngine {
       this.listProfiles(),
     ]);
 
+    const normalizedMode: TtsModeOption =
+      voiceConfig.ttsMode === "natural" ? "ava_hd" : voiceConfig.ttsMode;
+
     return {
       ...installed,
-      ttsMode: voiceConfig.ttsMode,
+      ttsMode: normalizedMode,
       activeProfileId: voiceConfig.activeProfileId ?? (profiles[0]?.id ?? null),
       speed: voiceConfig.speed,
       profiles,
@@ -140,6 +362,7 @@ export class OfflineVoiceCloneEngine {
           percent: 100,
           status: "done",
         };
+        void this.warmupEngine();
         setTimeout(() => {
           if (this.activeSetup?.status === "done") {
             this.activeSetup = null;
@@ -170,7 +393,12 @@ export class OfflineVoiceCloneEngine {
       const entries = await fsp.readdir(profilesDir, { withFileTypes: true });
       const profiles: PublicVoiceProfile[] = [];
       for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name === "piper_base_se.json") {
+        if (
+          !entry.isFile() ||
+          !entry.name.endsWith(".json") ||
+          entry.name.startsWith("piper_base_") ||
+          entry.name.startsWith("human_base_")
+        ) {
           continue;
         }
         try {
@@ -185,7 +413,7 @@ export class OfflineVoiceCloneEngine {
             });
           }
         } catch {
-          // Lewati file profil korup
+          // Lewati profil korup
         }
       }
       profiles.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -195,20 +423,27 @@ export class OfflineVoiceCloneEngine {
     }
   }
 
-  private async loadProfileWithEmbedding(profileId: string): Promise<StoredVoiceProfile> {
+  private async getTargetEmbeddingCached(profileId: string): Promise<Float32Array> {
+    const cached = this.cachedTargetProfiles.get(profileId);
+    if (cached) return cached;
+
     if (!/^[a-z0-9_-]{3,48}$/.test(profileId)) {
       throw new Error("ID profil suara tidak valid.");
     }
     const { profilesDir } = getVoiceEnginePaths(this.modelsDir);
     const jsonPath = path.join(profilesDir, `${profileId}.json`);
     const raw = await fsp.readFile(jsonPath, "utf8");
-    return StoredVoiceProfileSchema.parse(JSON.parse(raw));
+    const parsed = StoredVoiceProfileSchema.parse(JSON.parse(raw));
+    const vec = Float32Array.from(parsed.embedding);
+    this.cachedTargetProfiles.set(profileId, vec);
+    return vec;
   }
 
   public async deleteProfile(profileId: string): Promise<void> {
     if (!/^[a-z0-9_-]{3,48}$/.test(profileId)) {
       throw new Error("ID profil suara tidak valid.");
     }
+    this.cachedTargetProfiles.delete(profileId);
     const { profilesDir } = getVoiceEnginePaths(this.modelsDir);
     await Promise.all([
       fsp.rm(path.join(profilesDir, `${profileId}.json`), { force: true }),
@@ -240,24 +475,17 @@ export class OfflineVoiceCloneEngine {
     return this.colorSession;
   }
 
-  /**
-   * Ekstrak vektor warna suara 256-dimensi dari audio 22,050 Hz menggunakan tone_extract.onnx
-   */
   private async extractToneEmbedding(samples22k: Float32Array): Promise<Float32Array> {
     const session = await this.ensureExtractSession();
     const spec = computeOpenVoiceSpectrogram(samples22k);
     const inputName = session.inputNames[0] ?? "input";
     const inputTensor = new ort.Tensor("float32", spec.timeFirst, [1, spec.frames, OPENVOICE_FREQ_BINS]);
 
-    const feeds: Record<string, ort.Tensor> = {
-      [inputName]: inputTensor,
-    };
-
-    const outputMap = await session.run(feeds);
+    const outputMap = await session.run({ [inputName]: inputTensor });
     const outputName = session.outputNames[0];
     const outTensor = outputName ? outputMap[outputName] : undefined;
     if (!outTensor || !(outTensor.data instanceof Float32Array) || outTensor.data.length < 256) {
-      throw new Error("Output tensor tone_extract.onnx tidak valid (bukan 256-d float32).");
+      throw new Error("Output tensor tone_extract.onnx tidak valid.");
     }
 
     const vec = new Float32Array(256);
@@ -267,14 +495,11 @@ export class OfflineVoiceCloneEngine {
     return vec;
   }
 
-  /**
-   * Simpan sampel suara pengguna (.wav base64), bersihkan noise/hening, ekstrak embedding 256-d
-   */
   public async createProfileFromWavBase64(name: string, wavBase64: string): Promise<PublicVoiceProfile> {
     const cleanName = name.trim().slice(0, 40) || "Suara Custom";
     const installed = await checkVoiceEngineInstalled(this.modelsDir);
     if (!installed.openVoiceReady) {
-      throw new Error("Mesin OpenVoice ONNX belum terpasang. Klik 'Unduh Mesin Suara Offline' terlebih dahulu.");
+      throw new Error("Mesin OpenVoice ONNX belum terpasang. Klik 'Unduh Mesin Suara' terlebih dahulu.");
     }
 
     const stripped = wavBase64.replace(/^data:audio\/[a-z0-9.+-]+;base64,/i, "");
@@ -306,6 +531,9 @@ export class OfflineVoiceCloneEngine {
       fsp.writeFile(path.join(profilesDir, `${id}.wav`), normalizedWav),
     ]);
 
+    this.cachedTargetProfiles.set(id, embeddingVec);
+    void this.warmupEngine(id);
+
     return {
       id,
       name: cleanName,
@@ -314,126 +542,154 @@ export class OfflineVoiceCloneEngine {
     };
   }
 
-  /**
-   * Sintesis suara dasar Bahasa Indonesia via binary lokal Piper (100% offline, shell: false)
-   */
-  private async synthesizeBasePiperWav(text: string, speed: number): Promise<Buffer> {
+  private ensureHotPiperDaemon(lengthScale: string): HotPiperDaemon {
+    if (
+      this.hotPiper &&
+      this.hotPiper.lengthScale === lengthScale &&
+      this.hotPiper.child.exitCode === null &&
+      !this.hotPiper.child.killed
+    ) {
+      return this.hotPiper;
+    }
+
+    this.disposeHotPiper();
     const paths = getVoiceEnginePaths(this.modelsDir);
-    const tempOutPath = path.join(
-      os.tmpdir(),
-      `aiku_piper_${process.pid}_${Date.now()}_${crypto.randomBytes(3).toString("hex")}.wav`
+    // Parameter prosodi ekspresif (--noise_scale 0.78 --noise_w 0.90) mengurangi kesan datar/monoton saat full offline
+    const child = spawn(
+      paths.piperExePath,
+      [
+        "--model",
+        paths.piperModelPath,
+        "--config",
+        paths.piperConfigPath,
+        "--length_scale",
+        lengthScale,
+        "--noise_scale",
+        "0.78",
+        "--noise_w",
+        "0.90",
+        "--sentence_silence",
+        "0.12",
+        "--json-input",
+      ],
+      {
+        cwd: paths.piperDir,
+        shell: false,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      }
     );
+
+    child.on("exit", () => {
+      if (this.hotPiper?.child === child) {
+        this.hotPiper = null;
+      }
+    });
+
+    const rl = readline.createInterface({ input: child.stdout });
+    this.hotPiper = { child, rl, lengthScale };
+    return this.hotPiper;
+  }
+
+  private synthesizeBasePiperWav(text: string, speed: number): Promise<Buffer> {
     const clampedSpeed = Math.min(1.6, Math.max(0.65, speed));
     const lengthScale = (1 / clampedSpeed).toFixed(3);
 
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn(
-          paths.piperExePath,
-          [
-            "--model",
-            paths.piperModelPath,
-            "--config",
-            paths.piperConfigPath,
-            "--output_file",
-            tempOutPath,
-            "--length_scale",
-            lengthScale,
-          ],
-          {
-            cwd: paths.piperDir,
-            shell: false,
-            windowsHide: true,
-            stdio: ["pipe", "ignore", "pipe"],
-          }
-        );
+    const runJob = async (): Promise<Buffer> => {
+      const tempOutPath = path.join(
+        os.tmpdir(),
+        `aiku_hot_piper_${process.pid}_${Date.now()}_${crypto.randomBytes(3).toString("hex")}.wav`
+      );
+      const daemon = this.ensureHotPiperDaemon(lengthScale);
 
-        let stderrText = "";
-        const timer = setTimeout(() => {
-          child.kill();
-          reject(new Error("Waktu sintesis Piper habis (timeout 20s)."));
-        }, 20_000);
-
-        child.stderr.on("data", (chunk: Buffer) => {
-          stderrText += chunk.toString("utf8");
-        });
-
-        child.on("error", (err) => {
-          clearTimeout(timer);
-          reject(new Error(`Gagal menjalankan Piper TTS: ${err.message}`));
-        });
-
-        child.on("close", (code) => {
-          clearTimeout(timer);
-          if (code === 0) {
-            resolve();
-          } else {
-            reject(new Error(`Piper TTS berhenti dengan kode ${code}: ${stderrText.slice(-240)}`));
-          }
-        });
-
-        child.stdin.write(`${text}\n`, "utf8");
-        child.stdin.end();
-      });
-
-      return await fsp.readFile(tempOutPath);
-    } finally {
       try {
-        await fsp.rm(tempOutPath, { force: true });
-      } catch {
-        // Abaikan kegagalan hapus file temp
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            this.disposeHotPiper();
+            reject(new Error("Waktu sintesis Piper habis (timeout 12s)."));
+          }, 12_000);
+
+          const onLine = (): void => {
+            clearTimeout(timer);
+            daemon.child.off("exit", onUnexpectedExit);
+            resolve();
+          };
+
+          const onUnexpectedExit = (code: number | null): void => {
+            clearTimeout(timer);
+            daemon.rl.off("line", onLine);
+            reject(new Error(`Proses Piper tertutup tak terduga (kode ${code}).`));
+          };
+
+          daemon.rl.once("line", onLine);
+          daemon.child.once("exit", onUnexpectedExit);
+          daemon.child.stdin.write(`${JSON.stringify({ text, output_file: tempOutPath })}\n`, "utf8");
+        });
+
+        return await fsp.readFile(tempOutPath);
+      } finally {
+        void fsp.rm(tempOutPath, { force: true }).catch(() => {});
       }
-    }
+    };
+
+    const queued = this.piperJobChain.then(runJob, runJob);
+    this.piperJobChain = queued.then(
+      () => undefined,
+      () => undefined
+    );
+    return queued;
   }
 
-  /**
-   * Ambil atau ekstrak sekali embedding speaker dasar Piper agar konversi berikutnya instan
-   */
-  private async getOrExtractBasePiperEmbedding(piperSamples22k: Float32Array): Promise<Float32Array> {
-    if (this.cachedBasePiperEmbedding) {
-      return this.cachedBasePiperEmbedding;
-    }
+  private async getOrExtractBaseEmbedding(cacheKey: string, fallbackSamples22k: Float32Array): Promise<Float32Array> {
+    const mem = this.cachedBaseEmbeddings.get(cacheKey);
+    if (mem) return mem;
 
     const { profilesDir } = getVoiceEnginePaths(this.modelsDir);
-    const cacheFile = path.join(profilesDir, "piper_base_se.json");
+    const cacheFile = path.join(profilesDir, `${cacheKey}.json`);
 
     try {
       const raw = await fsp.readFile(cacheFile, "utf8");
       const arr = z.array(z.number()).length(256).parse(JSON.parse(raw));
-      this.cachedBasePiperEmbedding = Float32Array.from(arr);
-      return this.cachedBasePiperEmbedding;
+      const vec = Float32Array.from(arr);
+      this.cachedBaseEmbeddings.set(cacheKey, vec);
+      return vec;
     } catch {
-      // Belum ada cache -> ekstrak dari sampel kalimat Piper yang cukup panjang (>= 1.5s)
-      let refSamples = piperSamples22k;
-      if (refSamples.length < OPENVOICE_SAMPLE_RATE * 2) {
-        const calibWav = await this.synthesizeBasePiperWav(
-          "Halo, selamat datang di asisten pintar lokal aiKu yang berjalan seratus persen secara luring di perangkat Anda.",
-          1.0
-        );
-        const decoded = decodeWavBuffer(calibWav);
-        refSamples = resampleAudio(decoded.samples, decoded.sampleRate, OPENVOICE_SAMPLE_RATE);
+      let refSamples = fallbackSamples22k;
+      if (refSamples.length < OPENVOICE_SAMPLE_RATE * 1.8) {
+        if (cacheKey === "piper_base_se") {
+          const calibWav = await this.synthesizeBasePiperWav(
+            "Halo, selamat datang di asisten pribadi aiKu yang siap menemani dan membantu aktivitas kamu.",
+            1.0
+          );
+          const decoded = decodeWavBuffer(calibWav);
+          refSamples = resampleAudio(decoded.samples, decoded.sampleRate, OPENVOICE_SAMPLE_RATE);
+        } else if (cacheKey === "human_base_andrew_hd") {
+          const calibHuman = await this.humanTts.synthesize24k({
+            text: "Halo, selamat datang di asisten pribadi aiKu yang siap menemani dan membantu aktivitas kamu setiap hari.",
+            presetId: "andrew_hd",
+            speed: 1.0,
+          });
+          refSamples = resampleAudio(calibHuman.samples24k, calibHuman.sampleRate, OPENVOICE_SAMPLE_RATE);
+        }
       }
 
       const vec = await this.extractToneEmbedding(refSamples);
-      this.cachedBasePiperEmbedding = vec;
+      this.cachedBaseEmbeddings.set(cacheKey, vec);
       try {
         await fsp.mkdir(profilesDir, { recursive: true });
         await fsp.writeFile(cacheFile, JSON.stringify(Array.from(vec)), "utf8");
       } catch {
-        // Abaikan jika gagal menyimpan cache
+        // Abaikan
       }
       return vec;
     }
   }
 
-  /**
-   * Konversi warna suara menggunakan OpenVoice V2 tone_color.onnx
-   */
   private async convertVoiceToneColor(
     sourceSamples22k: Float32Array,
     srcEmbedding: Float32Array,
     destEmbedding: Float32Array,
-    tau: number = 0.3
+    tau: number = 0.25
   ): Promise<Float32Array> {
     const session = await this.ensureColorSession();
     const spec = computeOpenVoiceSpectrogram(sourceSamples22k);
@@ -456,7 +712,6 @@ export class OfflineVoiceCloneEngine {
       } else if (lower === "tau") {
         feeds[inputName] = tauTensor;
       } else {
-        // Primary spectrogram tensor ("audio" / "spec" / "y")
         feeds[inputName] = specTensor;
       }
     }
@@ -465,64 +720,113 @@ export class OfflineVoiceCloneEngine {
     const outName = session.outputNames[0];
     const outTensor = outName ? outputs[outName] : undefined;
     if (!outTensor || !(outTensor.data instanceof Float32Array) || outTensor.data.length === 0) {
-      throw new Error("Output gelombang suara dari tone_color.onnx kosong atau tidak valid.");
+      throw new Error("Output gelombang suara dari tone_color.onnx kosong.");
     }
 
     return outTensor.data;
   }
 
   /**
-   * Sintesis teks ke WAV base64 (mode "piper" murni atau "clone" dengan OpenVoice V2)
+   * Sintesis utama:
+   * - Mode "ava_hd" | "andrew_hd" | "gadis_hd" | "ardi_hd" | "natural": Suara Percakapan Manusia 24kHz HD (fallback otomatis ke Piper jika internet mati!)
+   * - Mode "clone": Menggabungkan Intonasi Napas Manusia 24kHz HD + Warna Suara Clone Pengguna via OpenVoice V2 ONNX (fallback otomatis ke Piper + OpenVoice saat full offline!)
+   * - Mode "piper": 100% Piper Offline Murni
    */
   public async synthesizeToWavBase64(options: {
     text: string;
-    mode: "piper" | "clone";
+    mode: TtsModeOption;
     profileId?: string | undefined;
     speed?: number | undefined;
-  }): Promise<{ wavBase64: string; usedMode: "piper" | "clone"; latencyMs: number }> {
+  }): Promise<{ wavBase64: string; usedMode: string; latencyMs: number }> {
     const t0 = performance.now();
     const cleanedText = cleanTextForSpeech(options.text);
     if (!cleanedText) {
       throw new Error("Teks kosong setelah pembersihan simbol.");
     }
 
+    const speed = options.speed ?? 1.03;
+    const humanPreset = mapModeToHumanPreset(options.mode);
+
+    // 1. Mode Suara Percakapan Manusia HD (24kHz 96kbps Conversational Prosody)
+    if (humanPreset !== null) {
+      try {
+        const mp3Buffer = await this.humanTts.synthesizeMp3Buffer({
+          text: cleanedText,
+          presetId: humanPreset,
+          speed,
+        });
+        return {
+          wavBase64: mp3Buffer.toString("base64"),
+          usedMode: humanPreset,
+          latencyMs: Math.round(performance.now() - t0),
+        };
+      } catch {
+        // Jika laptop sedang 100% offline tanpa Wi-Fi, otomatis fallback ke Piper lokal jika tersedia
+        const installed = await checkVoiceEngineInstalled(this.modelsDir);
+        if (installed.piperReady) {
+          const fallbackWav = await this.synthesizeBasePiperWav(cleanedText, speed);
+          return {
+            wavBase64: fallbackWav.toString("base64"),
+            usedMode: "piper_fallback",
+            latencyMs: Math.round(performance.now() - t0),
+          };
+        }
+        throw new Error("Koneksi suara HD tidak tersedia dan mesin Piper offline belum terpasang.");
+      }
+    }
+
     const installed = await checkVoiceEngineInstalled(this.modelsDir);
+
+    // 2. Mode Custom Voice Clone: gunakan intonasi bicara manusia HD ("andrew_hd" yang natural) sebagai prosodi sumber,
+    //    lalu ubah warna suaranya ke suara pengguna dengan OpenVoice V2 lokal! (Otomatis pakai Piper saat full offline)
+    if (options.mode === "clone" && options.profileId && installed.openVoiceReady) {
+      const destEmbedding = await this.getTargetEmbeddingCached(options.profileId);
+
+      try {
+        const humanSource = await this.humanTts.synthesize24k({
+          text: cleanedText,
+          presetId: "andrew_hd",
+          speed,
+        });
+        const sourceSamples22k = resampleAudio(humanSource.samples24k, humanSource.sampleRate, OPENVOICE_SAMPLE_RATE);
+        const srcEmbedding = await this.getOrExtractBaseEmbedding("human_base_andrew_hd", sourceSamples22k);
+        const converted = await this.convertVoiceToneColor(sourceSamples22k, srcEmbedding, destEmbedding, 0.25);
+        const finalWav = encodeWav16Bit(converted, OPENVOICE_SAMPLE_RATE);
+        return {
+          wavBase64: finalWav.toString("base64"),
+          usedMode: "clone_human_prosody",
+          latencyMs: Math.round(performance.now() - t0),
+        };
+      } catch {
+        // Offline fallback: Piper lokal + OpenVoice V2
+        if (!installed.piperReady) {
+          throw new Error("Mesin Piper belum terpasang untuk mode offline.");
+        }
+        const basePiperWav = await this.synthesizeBasePiperWav(cleanedText, speed);
+        const decodedBase = decodeWavBuffer(basePiperWav);
+        const baseSamples22k = resampleAudio(decodedBase.samples, decodedBase.sampleRate, OPENVOICE_SAMPLE_RATE);
+        const srcEmbedding = await this.getOrExtractBaseEmbedding("piper_base_se", baseSamples22k);
+        const converted = await this.convertVoiceToneColor(baseSamples22k, srcEmbedding, destEmbedding, 0.25);
+        const finalWav = encodeWav16Bit(converted, OPENVOICE_SAMPLE_RATE);
+        return {
+          wavBase64: finalWav.toString("base64"),
+          usedMode: "clone_offline_piper",
+          latencyMs: Math.round(performance.now() - t0),
+        };
+      }
+    }
+
+    // 3. Mode Piper Offline Murni
     if (!installed.piperReady) {
-      throw new Error("Mesin Piper Indonesia belum terpasang. Unduh terlebih dahulu di Pengaturan Suara.");
+      throw new Error("Mesin Piper Indonesia belum terpasang. Unduh di tab Voice Clone terlebih dahulu.");
     }
-
-    const speed = options.speed ?? 1.05;
     const basePiperWav = await this.synthesizeBasePiperWav(cleanedText, speed);
-
-    if (options.mode === "piper" || !options.profileId) {
-      return {
-        wavBase64: basePiperWav.toString("base64"),
-        usedMode: "piper",
-        latencyMs: Math.round(performance.now() - t0),
-      };
-    }
-
-    if (!installed.openVoiceReady) {
-      return {
-        wavBase64: basePiperWav.toString("base64"),
-        usedMode: "piper",
-        latencyMs: Math.round(performance.now() - t0),
-      };
-    }
-
-    const targetProfile = await this.loadProfileWithEmbedding(options.profileId);
-    const decodedBase = decodeWavBuffer(basePiperWav);
-    const baseSamples22k = resampleAudio(decodedBase.samples, decodedBase.sampleRate, OPENVOICE_SAMPLE_RATE);
-
-    const srcEmbedding = await this.getOrExtractBasePiperEmbedding(baseSamples22k);
-    const destEmbedding = Float32Array.from(targetProfile.embedding);
-    const convertedWaveform = await this.convertVoiceToneColor(baseSamples22k, srcEmbedding, destEmbedding, 0.3);
-    const finalWav = encodeWav16Bit(convertedWaveform, OPENVOICE_SAMPLE_RATE);
-
     return {
-      wavBase64: finalWav.toString("base64"),
-      usedMode: "clone",
+      wavBase64: basePiperWav.toString("base64"),
+      usedMode: "piper",
       latencyMs: Math.round(performance.now() - t0),
     };
   }
 }
+
+export { HUMAN_VOICE_PRESETS };

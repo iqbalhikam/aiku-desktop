@@ -1,3 +1,4 @@
+import { needsLiveWebInfo } from "../web/live-search.js";
 import type { ChatHistoryTurn } from "./llama-engine.js";
 
 const GEMINI_MODEL = "gemini-2.5-flash";
@@ -29,12 +30,8 @@ export function classifyCloudRouting(message: string): {
     return { useGemini: true, enableWebSearch: wantsWeb, cleanedPrompt: body };
   }
 
-  // 2. Riset internet / informasi terkini
-  if (
-    /\b(cari\s+di\s+internet|cari\s+tau|cari\s+tahu|di\s+internet|riset|berita\s+terbaru|harga\s+saham|kurs\s+dolar|cuaca\s+hari\s+ini)\b/.test(
-      lower
-    )
-  ) {
+  // 2. Riset internet / informasi terkini (berita, cuaca, kurs, kripto, peristiwa 2025/2026, dll.)
+  if (needsLiveWebInfo(trimmed)) {
     return { useGemini: true, enableWebSearch: true, cleanedPrompt: trimmed };
   }
 
