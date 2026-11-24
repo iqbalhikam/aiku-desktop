@@ -743,28 +743,112 @@ function resetBalloonVisuals() {
   }
 }
 
+let isIdleHovered = false;
+let currentStretchDragging = false;
+let hitBoxTrackUntil = 0;
+let hitBoxAnimId = null;
+let lastSentHitBox = "";
+
+function pushHitBox(draggingOverride = null) {
+  if (typeof invoke !== "function") return;
+  const island = document.getElementById("island");
+  if (!island) return;
+
+  const rect = island.getBoundingClientRect();
+  const toast = document.getElementById("island-toast");
+  const hasToast = Boolean(toast && !toast.classList.contains("hidden"));
+  const tRect = hasToast ? toast.getBoundingClientRect() : { left: 0, top: 0, right: 0, bottom: 0 };
+
+  // Saat elemen <select> native sedang dibuka di Settings, beri ruang ekstra ke bawah agar opsi dropdown leluasa diklik
+  const selectOpen = document.activeElement?.tagName === "SELECT" && island.dataset.state === "security";
+  const padX = selectOpen ? 20 : 1;
+  const padBottom = selectOpen ? 220 : 1;
+
+  const left = Math.round(rect.left - padX);
+  const top = Math.round(Math.min(0, rect.top));
+  const right = Math.round(rect.right + padX);
+  const bottom = Math.round(rect.bottom + padBottom);
+  const toastLeft = Math.round(tRect.left);
+  const toastTop = Math.round(tRect.top);
+  const toastRight = Math.round(tRect.right);
+  const toastBottom = Math.round(tRect.bottom);
+  const dragging = draggingOverride !== null ? draggingOverride : currentStretchDragging;
+
+  const key = `${left},${top},${right},${bottom},${toastLeft},${toastTop},${toastRight},${toastBottom},${hasToast ? 1 : 0},${dragging ? 1 : 0}`;
+  if (key === lastSentHitBox) return;
+  lastSentHitBox = key;
+
+  void invoke("update_hit_box", {
+    left,
+    top,
+    right,
+    bottom,
+    toastLeft,
+    toastTop,
+    toastRight,
+    toastBottom,
+    hasToast,
+    dragging,
+  }).catch(() => {});
+}
+
+function trackHitBoxForMs(durationMs = 420) {
+  if (typeof invoke !== "function") return;
+  const now = performance.now();
+  hitBoxTrackUntil = Math.max(hitBoxTrackUntil, now + durationMs);
+  if (hitBoxAnimId !== null) return;
+
+  const step = (ts) => {
+    pushHitBox();
+    if (ts < hitBoxTrackUntil) {
+      hitBoxAnimId = requestAnimationFrame(step);
+    } else {
+      hitBoxAnimId = null;
+      pushHitBox();
+    }
+  };
+  hitBoxAnimId = requestAnimationFrame(step);
+}
+
+function setIdleHovered(hovered) {
+  const island = document.getElementById("island");
+  if (!island) return;
+  const next = Boolean(hovered && island.dataset.state === "idle");
+  if (isIdleHovered === next && island.classList.contains("is-hovered") === next) return;
+  isIdleHovered = next;
+  island.classList.toggle("is-hovered", next);
+  trackHitBoxForMs(380);
+}
+
+function clearActiveNotifVisuals() {
+  if (activeNotifTimer) {
+    clearTimeout(activeNotifTimer);
+    activeNotifTimer = null;
+  }
+  activeNotifMode = false;
+  document.getElementById("active-notif-track")?.classList.add("hidden");
+  document.getElementById("active-notif-visual")?.classList.add("hidden");
+  document.getElementById("active-voice-visual")?.classList.remove("hidden");
+}
+
 function setIslandState(state) {
   const wrapper = document.querySelector(".notch-wrapper");
   const island = document.getElementById("island");
   resetBalloonVisuals();
   wrapper?.classList.remove("island-hidden");
 
-  // Besarkan jendela dulu hanya jika keluar dari Idle (700px agar kapsul 650px + kuping notch 28px tidak terpotong)
-  if (state !== "idle" && island.dataset.state === "idle" && typeof invoke === "function") {
-    void invoke("resize_island", { width: 700, height: 440 });
+  if (state !== "active" && activeNotifMode) {
+    clearActiveNotifVisuals();
+  }
+  if (state !== "idle") {
+    isIdleHovered = false;
   }
 
-  island.className = `island state-${state}${chatStyle === "gemini" ? " chat-gemini" : ""}`;
+  island.className = `island state-${state}${chatStyle === "gemini" ? " chat-gemini" : ""}${
+    state === "idle" && isIdleHovered ? " is-hovered" : ""
+  }`;
   island.dataset.state = state;
-
-  // Setelah animasi mengecil ke Idle selesai (280ms), susutkan jendela ke ukuran cukup untuk hover Quick Access (426x94) tanpa kedip
-  if (state === "idle" && typeof invoke === "function") {
-    setTimeout(() => {
-      if (document.getElementById("island")?.dataset.state === "idle") {
-        void invoke("resize_island", { width: 426, height: 94 });
-      }
-    }, 280);
-  }
+  trackHitBoxForMs(420);
 
   if (state === "palette") {
     setBrowserSearchInputMode(false);
@@ -794,8 +878,11 @@ function showIslandNotification(title, subtitle = "", type = "ok", forceFase2 = 
 
   // Jika sedang di Fase 1 (Idle) atau dipaksa masuk Fase 2 (mis. timer selesai / file baru / tes notif)
   // -> Dynamic Island membesar ke Fase 2 lalu mengecil otomatis ke Fase 1 setelah notifDurationSec!
-  if ((currentState === "idle" || forceFase2 || activeNotifMode) && !liveVoiceActive) {
-    if (activeNotifTimer) clearTimeout(activeNotifTimer);
+  if ((currentState === "idle" || forceFase2) && !liveVoiceActive) {
+    if (activeNotifTimer) {
+      clearTimeout(activeNotifTimer);
+      activeNotifTimer = null;
+    }
     activeNotifMode = true;
 
     document.getElementById("active-voice-visual")?.classList.add("hidden");
@@ -815,22 +902,24 @@ function showIslandNotification(title, subtitle = "", type = "ok", forceFase2 = 
       subtitle || `Notifikasi • Mengecil otomatis (${notifDurationSec}s)`;
 
     notifTrack?.classList.remove("hidden");
+
+    // Ubah ke state-active DULU agar #view-active tampil (bukan display:none), baru mulai animasi progress bar!
+    setIslandState("active");
+
     if (notifBar) {
       notifBar.style.transition = "none";
       notifBar.style.transform = "scaleX(1)";
-      void notifBar.offsetWidth;
-      notifBar.style.transition = `transform ${durationMs}ms linear`;
-      notifBar.style.transform = "scaleX(0)";
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!activeNotifMode) return;
+          notifBar.style.transition = `transform ${durationMs}ms linear`;
+          notifBar.style.transform = "scaleX(0)";
+        });
+      });
     }
 
-    setIslandState("active");
-
     activeNotifTimer = setTimeout(() => {
-      activeNotifMode = false;
-      activeNotifTimer = null;
-      notifTrack?.classList.add("hidden");
-      notifVisual?.classList.add("hidden");
-      document.getElementById("active-voice-visual")?.classList.remove("hidden");
+      clearActiveNotifVisuals();
       if (document.getElementById("island")?.dataset.state === "active" && !liveVoiceActive) {
         setIslandState("idle");
       }
@@ -861,7 +950,11 @@ function showIslandNotification(title, subtitle = "", type = "ok", forceFase2 = 
   }
 
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.add("hidden"), durationMs);
+  trackHitBoxForMs(320);
+  toastTimer = setTimeout(() => {
+    toast.classList.add("hidden");
+    trackHitBoxForMs(150);
+  }, durationMs);
 }
 
 function showToast(message, type = "ok", subtitle = "", forceFase2 = false) {
@@ -956,6 +1049,7 @@ function initElasticJellyPhysics() {
   function applyBalloonTransform() {
     wrapper.style.transform =
       `translateX(${curTx.toFixed(2)}px) scale(${curSx.toFixed(4)}, ${curSy.toFixed(4)}) skewX(${curSkew.toFixed(2)}deg)`;
+    pushHitBox();
   }
 
   function runBalloonSpringBounce() {
@@ -995,6 +1089,7 @@ function initElasticJellyPhysics() {
         island.style.borderBottomLeftRadius = "";
         island.style.borderBottomRightRadius = "";
         animFrameId = null;
+        pushHitBox(false);
       }
     };
 
@@ -1022,6 +1117,7 @@ function initElasticJellyPhysics() {
 
     if (!movedEnough) {
       movedEnough = true;
+      currentStretchDragging = true;
       if (activePointerId !== null) {
         try {
           island.setPointerCapture(activePointerId);
@@ -1031,18 +1127,12 @@ function initElasticJellyPhysics() {
     lastDy = dy;
     wrapper.classList.add("stretching");
 
-    // Efek tarik balon yang melar dramatis & menggelembung ke arah tarikan kursor
+    // Efek tarik balon yang melar mulus tanpa lompatan titik jangkar (zero clipping di kanvas 960x620!)
     const pullY = Math.max(-28, Math.min(150, dy));
     const pullX = Math.max(-150, Math.min(150, dx));
 
-    // Geser titik jangkar sedikit berlawanan agar sisi yang ditarik terasa melar seperti balon
-    if (pullX > 18) {
-      wrapper.style.transformOrigin = "20% top";
-    } else if (pullX < -18) {
-      wrapper.style.transformOrigin = "80% top";
-    } else {
-      wrapper.style.transformOrigin = "50% top";
-    }
+    const originX = 50 - Math.tanh(pullX / 120) * 18;
+    wrapper.style.transformOrigin = `${originX.toFixed(1)}% top`;
 
     const downFactor = Math.tanh(Math.max(0, pullY) / 95);
     const upFactor = Math.tanh(Math.max(0, -pullY) / 50);
@@ -1050,9 +1140,9 @@ function initElasticJellyPhysics() {
 
     // Volume-preserving balloon squash & stretch (terkontrol agar teks tetap rapi)
     curSy = 1 + downFactor * 0.34 - upFactor * 0.16 - sideFactor * 0.08;
-    curSx = 1 + sideFactor * 0.24 - downFactor * 0.12 + upFactor * 0.08;
-    curTx = Math.tanh(pullX / 120) * 26;
-    curSkew = Math.tanh(pullX / 150) * -6.5;
+    curSx = 1 + sideFactor * 0.2 - downFactor * 0.1 + upFactor * 0.08;
+    curTx = Math.tanh(pullX / 120) * 28;
+    curSkew = Math.tanh(pullX / 150) * -6;
 
     // Ujung bawah ikut membulat seperti ujung balon yang ditarik
     const extraRadius = Math.round(20 + downFactor * 26);
@@ -1067,6 +1157,7 @@ function initElasticJellyPhysics() {
   const endStretch = () => {
     if (!dragging) return;
     dragging = false;
+    currentStretchDragging = false;
     activePointerId = null;
     wrapper.classList.remove("stretching");
 
@@ -1085,6 +1176,8 @@ function initElasticJellyPhysics() {
       } else if (island.dataset.state !== "idle" && lastDy < -26) {
         setIslandState("idle");
       }
+    } else {
+      pushHitBox(false);
     }
   };
 
@@ -1093,11 +1186,13 @@ function initElasticJellyPhysics() {
   window.addEventListener("pointerup", endStretch);
   window.addEventListener("blur", () => {
     dragging = false;
+    currentStretchDragging = false;
     activePointerId = null;
     stopSpringLoop();
     curSx = 1; curSy = 1; curTx = 0; curSkew = 0;
     velSx = 0; velSy = 0; velTx = 0; velSkew = 0;
     resetBalloonVisuals();
+    pushHitBox(false);
   });
 }
 
@@ -1875,18 +1970,54 @@ document.addEventListener("DOMContentLoaded", () => {
   // Tekan Ctrl 2x cepat -> Toggle Hide / Show penuh!
   if (typeof listen === "function") {
     void listen("island-blur", () => {
+      setIdleHovered(false);
       const current = document.getElementById("island")?.dataset.state;
-      if (current && current !== "idle" && current !== "active") {
+      if (current && current !== "idle" && (current !== "active" || activeNotifMode)) {
         setIslandState("idle");
       }
     });
+    void listen("island-cursor-enter", () => {
+      if (document.getElementById("island")?.dataset.state === "idle") {
+        setIdleHovered(true);
+      }
+    });
+    void listen("island-cursor-leave", () => {
+      setIdleHovered(false);
+    });
     void listen("island-toggle-hide", () => {
+      setIdleHovered(false);
       hideIslandSmoothly();
     });
     void listen("island-summon", () => {
       setIslandState("palette");
     });
   }
+
+  // Hover deterministik (berfungsi baik di Tauri maupun di preview browser lokal)
+  const rootIslandEl = document.getElementById("island");
+  rootIslandEl?.addEventListener("mouseenter", () => {
+    if (rootIslandEl.dataset.state === "idle") {
+      setIdleHovered(true);
+    }
+  });
+  rootIslandEl?.addEventListener("mouseleave", () => {
+    if (!currentStretchDragging) {
+      setIdleHovered(false);
+    }
+  });
+
+  // ResizeObserver & fokus <select> menjaga hit-box selalu presisi mengikuti ukuran nyata Dynamic Island!
+  if (typeof ResizeObserver === "function" && rootIslandEl) {
+    const ro = new ResizeObserver(() => {
+      pushHitBox();
+    });
+    ro.observe(rootIslandEl);
+    const toastEl = document.getElementById("island-toast");
+    if (toastEl) ro.observe(toastEl);
+  }
+  document.addEventListener("focusin", () => pushHitBox());
+  document.addEventListener("focusout", () => setTimeout(() => pushHitBox(), 60));
+  document.addEventListener("change", () => setTimeout(() => pushHitBox(), 40));
 
   // Klik area transparan di dalam jendela di luar kapsul -> mengecil ke Idle Pill
   document.querySelector(".stage")?.addEventListener("click", (e) => {
@@ -2037,17 +2168,18 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Klik area notifikasi Fase 2 -> langsung buka Inbox Notifikasi dengan pesan tersebut terpilih
+  // Klik area notifikasi Fase 2 -> jika dari Inbox/WA langsung buka Inbox; jika notif umum langsung tutup ke Idle
   document.getElementById("view-active")?.addEventListener("click", (e) => {
-    if (e.target.closest("#btn-active-stop") || !activeNotifMode || !lastActiveNotifInboxId) return;
-    if (activeNotifTimer) clearTimeout(activeNotifTimer);
-    activeNotifTimer = null;
-    activeNotifMode = false;
-    document.getElementById("active-notif-track")?.classList.add("hidden");
-    document.getElementById("active-notif-visual")?.classList.add("hidden");
-    document.getElementById("active-voice-visual")?.classList.remove("hidden");
-    setIslandState("palette");
-    openInboxPanel(lastActiveNotifInboxId);
+    if (e.target.closest("#btn-active-stop") || !activeNotifMode) return;
+    const inboxId = lastActiveNotifInboxId;
+    lastActiveNotifInboxId = null;
+    clearActiveNotifVisuals();
+    if (inboxId) {
+      setIslandState("palette");
+      openInboxPanel(inboxId);
+    } else {
+      setIslandState("idle");
+    }
   });
 
   document.getElementById("btn-open-security").addEventListener("click", () => void openSecurityDrawer("sandbox"));
@@ -2312,5 +2444,6 @@ document.addEventListener("DOMContentLoaded", () => {
   renderHoverShortcuts();
   setIslandState("idle");
   runBootWelcomeAnimation();
+  trackHitBoxForMs(3000);
   void refreshStatus();
 });

@@ -17,8 +17,51 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(target_os = "windows")]
+#[repr(C)]
+struct WinPoint {
+    x: i32,
+    y: i32,
+}
+
+#[cfg(target_os = "windows")]
 extern "system" {
     fn GetAsyncKeyState(vkey: i32) -> i16;
+    fn GetCursorPos(lp_point: *mut WinPoint) -> i32;
+}
+
+const CANVAS_WIDTH: f64 = 960.0;
+const CANVAS_HEIGHT: f64 = 620.0;
+
+#[derive(Clone, Copy)]
+struct HitBox {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    toast_left: f64,
+    toast_top: f64,
+    toast_right: f64,
+    toast_bottom: f64,
+    has_toast: bool,
+    dragging: bool,
+}
+
+impl Default for HitBox {
+    fn default() -> Self {
+        Self {
+            // Default tepat seukuran Idle Pill (220x38) di tengah kanvas 960px
+            left: (CANVAS_WIDTH - 220.0) / 2.0,
+            top: 0.0,
+            right: (CANVAS_WIDTH + 220.0) / 2.0,
+            bottom: 38.0,
+            toast_left: 0.0,
+            toast_top: 0.0,
+            toast_right: 0.0,
+            toast_bottom: 0.0,
+            has_toast: false,
+            dragging: false,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -137,6 +180,7 @@ impl Drop for NodeRpcClient {
 struct AppState {
     worker: Arc<Mutex<Option<NodeRpcClient>>>,
     hotkey_vks: Arc<Mutex<Vec<i32>>>,
+    hit_box: Arc<Mutex<HitBox>>,
     next_id: AtomicU64,
 }
 
@@ -166,8 +210,8 @@ fn resolve_project_root() -> Result<PathBuf, String> {
 }
 
 fn center_top_window(window: &tauri::WebviewWindow, width: f64, height: f64) {
-    let clamped_w = width.clamp(220.0, 740.0);
-    let clamped_h = height.clamp(44.0, 480.0);
+    let clamped_w = width.clamp(220.0, 1200.0);
+    let clamped_h = height.clamp(44.0, 720.0);
     let _ = window.set_size(LogicalSize::new(clamped_w, clamped_h));
 
     if let Ok(Some(monitor)) = window.current_monitor() {
@@ -259,52 +303,127 @@ fn load_initial_hotkey_vks() -> Vec<i32> {
     vec![0x12, 0x20]
 }
 
-/// Global Custom Hotkey listener (1–3 key combo, Windows native, 0 extra crates, ~0% CPU).
+/// Global Custom Hotkey + Pixel-Exact Click-Through Hit-Testing Daemon (~0% CPU).
+/// Memastikan HANYA area hitam Dynamic Island (dan toast aktif) yang menerima sentuhan/klik mouse,
+/// sedangkan seluruh ruang transparan di sekelilingnya 100% tembus klik ke aplikasi di bawahnya!
 #[cfg(target_os = "windows")]
-fn spawn_custom_hotkey_listener(app_handle: tauri::AppHandle, hotkey_vks: Arc<Mutex<Vec<i32>>>) {
+fn spawn_island_daemon(
+    app_handle: tauri::AppHandle,
+    hotkey_vks: Arc<Mutex<Vec<i32>>>,
+    hit_box: Arc<Mutex<HitBox>>,
+) {
     std::thread::spawn(move || {
         const MODIFIERS: [i32; 3] = [0x11, 0x12, 0x10]; // Ctrl, Alt, Shift
         let mut was_triggered = false;
+        let mut last_ignore_cursor: Option<bool> = None;
+        let mut last_in_island = false;
+        let mut prev_mouse_down = false;
 
         loop {
             std::thread::sleep(Duration::from_millis(16));
 
+            // 1. Cek Global Custom Hotkey (1-3 tombol)
             let current_vks: Vec<i32> = match hotkey_vks.lock() {
                 Ok(guard) => guard.clone(),
-                Err(_) => continue,
+                Err(_) => Vec::new(),
             };
 
-            if current_vks.is_empty() {
-                was_triggered = false;
-                continue;
-            }
+            if !current_vks.is_empty() {
+                let all_pressed = current_vks
+                    .iter()
+                    .all(|&vk| unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 });
 
-            let all_pressed = current_vks
-                .iter()
-                .all(|&vk| unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 });
+                let extra_mod_down = MODIFIERS.iter().any(|&m| {
+                    !current_vks.contains(&m)
+                        && unsafe { (GetAsyncKeyState(m) as u16 & 0x8000) != 0 }
+                });
 
-            // Pastikan tidak ada modifier tambahan yang tidak termasuk dalam hotkey user
-            let extra_mod_down = MODIFIERS.iter().any(|&m| {
-                !current_vks.contains(&m) && unsafe { (GetAsyncKeyState(m) as u16 & 0x8000) != 0 }
-            });
-
-            if all_pressed && !extra_mod_down {
-                if !was_triggered {
-                    was_triggered = true;
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let is_visible = window.is_visible().unwrap_or(false);
-                        if is_visible {
-                            let _ = window.emit("island-toggle-hide", ());
-                        } else {
-                            center_top_window(&window, 700.0, 440.0);
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                            let _ = window.emit("island-summon", ());
+                if all_pressed && !extra_mod_down {
+                    if !was_triggered {
+                        was_triggered = true;
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            let is_visible = window.is_visible().unwrap_or(false);
+                            if is_visible {
+                                let _ = window.emit("island-toggle-hide", ());
+                            } else {
+                                center_top_window(&window, CANVAS_WIDTH, CANVAS_HEIGHT);
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                                let _ = window.emit("island-summon", ());
+                            }
                         }
                     }
+                } else {
+                    was_triggered = false;
                 }
             } else {
                 was_triggered = false;
+            }
+
+            // 2. Pixel-Exact Hit-Testing terhadap batas nyata Dynamic Island
+            if let Some(window) = app_handle.get_webview_window("main") {
+                if !window.is_visible().unwrap_or(false) {
+                    last_ignore_cursor = None;
+                    last_in_island = false;
+                    continue;
+                }
+
+                let mut pt = WinPoint { x: 0, y: 0 };
+                if unsafe { GetCursorPos(&mut pt) } != 0 {
+                    if let Ok(win_pos) = window.outer_position() {
+                        let scale = window.scale_factor().unwrap_or(1.0);
+                        let rel_x = (pt.x - win_pos.x) as f64 / scale;
+                        let rel_y = (pt.y - win_pos.y) as f64 / scale;
+
+                        let hb = hit_box.lock().map(|g| *g).unwrap_or_default();
+
+                        // Di tepi atas (y <= 15px), sertakan kuping cekung (14px kiri & kanan)
+                        let ear_pad = if (0.0..=15.0).contains(&rel_y) {
+                            14.0
+                        } else {
+                            0.0
+                        };
+
+                        let in_island = rel_x >= (hb.left - ear_pad)
+                            && rel_x <= (hb.right + ear_pad)
+                            && rel_y >= hb.top.min(0.0)
+                            && rel_y <= hb.bottom;
+
+                        let in_toast = hb.has_toast
+                            && rel_x >= hb.toast_left
+                            && rel_x <= hb.toast_right
+                            && rel_y >= hb.toast_top
+                            && rel_y <= hb.toast_bottom;
+
+                        if in_island != last_in_island {
+                            last_in_island = in_island;
+                            if in_island {
+                                let _ = window.emit("island-cursor-enter", ());
+                            } else {
+                                let _ = window.emit("island-cursor-leave", ());
+                            }
+                        }
+
+                        let interactive = hb.dragging || in_island || in_toast;
+                        let should_ignore = !interactive;
+
+                        if last_ignore_cursor != Some(should_ignore) {
+                            if window.set_ignore_cursor_events(should_ignore).is_ok() {
+                                last_ignore_cursor = Some(should_ignore);
+                            }
+                        }
+
+                        // Klik di luar batas Dynamic Island -> tembus ke app di bawahnya & langsung lipat ke Fase 1!
+                        let mouse_down = unsafe {
+                            ((GetAsyncKeyState(0x01) as u16 & 0x8000) != 0)
+                                || ((GetAsyncKeyState(0x02) as u16 & 0x8000) != 0)
+                        };
+                        if mouse_down && !prev_mouse_down && !interactive {
+                            let _ = window.emit("island-blur", ());
+                        }
+                        prev_mouse_down = mouse_down;
+                    }
+                }
             }
         }
     });
@@ -352,9 +471,38 @@ fn hide_island(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn resize_island(app: tauri::AppHandle, width: f64, height: f64) {
-    if let Some(window) = app.get_webview_window("main") {
-        center_top_window(&window, width, height);
+fn resize_island(_app: tauri::AppHandle, _width: f64, _height: f64) {
+    // Kanvas kini tetap 960x620 dengan click-through presisi per piksel (update_hit_box) -> zero clipping & zero HWND flicker
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn update_hit_box(
+    state: State<'_, AppState>,
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    toast_left: f64,
+    toast_top: f64,
+    toast_right: f64,
+    toast_bottom: f64,
+    has_toast: bool,
+    dragging: bool,
+) {
+    if let Ok(mut guard) = state.hit_box.lock() {
+        *guard = HitBox {
+            left,
+            top,
+            right,
+            bottom,
+            toast_left,
+            toast_top,
+            toast_right,
+            toast_bottom,
+            has_toast,
+            dragging,
+        };
     }
 }
 
@@ -380,21 +528,23 @@ fn quit_app(app: tauri::AppHandle) {
 fn main() {
     let hotkey_vks = Arc::new(Mutex::new(load_initial_hotkey_vks()));
     let hotkey_vks_for_thread = Arc::clone(&hotkey_vks);
+    let hit_box = Arc::new(Mutex::new(HitBox::default()));
+    let hit_box_for_thread = Arc::clone(&hit_box);
 
     let app_state = AppState {
         worker: Arc::new(Mutex::new(None)),
         hotkey_vks,
+        hit_box,
         next_id: AtomicU64::new(1),
     };
 
     tauri::Builder::default()
         .manage(app_state)
         .setup(move |app| {
-            #[cfg(target_os = "windows")]
-            spawn_custom_hotkey_listener(app.handle().clone(), hotkey_vks_for_thread);
-
             if let Some(window) = app.get_webview_window("main") {
-                center_top_window(&window, 426.0, 94.0);
+                center_top_window(&window, CANVAS_WIDTH, CANVAS_HEIGHT);
+                // Aktifkan click-through sejak awal; daemon 60Hz otomatis membuka interaksi tepat saat kursor menyentuh Dynamic Island
+                let _ = window.set_ignore_cursor_events(true);
                 let win_clone = window.clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::Focused(false) = event {
@@ -402,12 +552,17 @@ fn main() {
                     }
                 });
             }
+
+            #[cfg(target_os = "windows")]
+            spawn_island_daemon(app.handle().clone(), hotkey_vks_for_thread, hit_box_for_thread);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             rpc_call,
             hide_island,
             resize_island,
+            update_hit_box,
             set_global_hotkey,
             quit_app
         ])
