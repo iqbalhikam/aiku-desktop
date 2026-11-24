@@ -1,6 +1,6 @@
 {
   "name": "aiku-assistant",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Lightweight local desktop file assistant powered by Qwen2.5-0.5B-Instruct with P0 filesystem security",
   "type": "module",
   "main": "dist/cli/index.js",

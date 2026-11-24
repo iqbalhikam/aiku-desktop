@@ -2637,11 +2637,27 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("focusout", () => setTimeout(() => pushHitBox(), 60));
   document.addEventListener("change", () => setTimeout(() => pushHitBox(), 40));
 
-  // Klik area transparan di dalam jendela di luar kapsul -> mengecil ke Idle Pill
-  document.querySelector(".stage")?.addEventListener("click", (e) => {
-    if (e.target === e.currentTarget && document.getElementById("island")?.dataset.state !== "idle") {
-      setIslandState("idle");
-    }
+  // Klik di mana pun di luar Dynamic Island (area kosong halaman, atau jendela lain / aplikasi lain) -> mengecil ke Idle Pill
+  const collapseOnOutsideInteraction = () => {
+    if (currentStretchDragging || liveVoiceActive) return;
+    const current = document.getElementById("island")?.dataset.state;
+    if (!current || current === "idle") return;
+    if (current === "active" && !activeNotifMode) return;
+    if (document.activeElement?.tagName === "SELECT") return;
+    setIslandState("idle");
+  };
+  document.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (e.target instanceof Element && e.target.closest(".notch-wrapper, #island-toast")) return;
+      collapseOnOutsideInteraction();
+    },
+    true
+  );
+  // Mode browser / jendela biasa: kehilangan fokus (klik jendela lain) juga mengecilkan kapsul
+  window.addEventListener("blur", () => {
+    if (typeof listen === "function") return; // Di Tauri sudah ditangani event native island-blur
+    setTimeout(collapseOnOutsideInteraction, 80);
   });
 
   document.getElementById("view-idle").addEventListener("click", (e) => {
