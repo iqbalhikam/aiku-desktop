@@ -77,14 +77,24 @@ export async function askGeminiCloud(options: {
 }): Promise<GeminiReplyResult> {
   const url = `${GEMINI_API_BASE}/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(options.apiKey)}`;
 
+  const cleanPrompt = options.prompt.trim();
+  let priorHistory = options.history;
+  if (
+    priorHistory.length > 0 &&
+    priorHistory[priorHistory.length - 1]?.role === "user" &&
+    priorHistory[priorHistory.length - 1]?.content.trim() === cleanPrompt
+  ) {
+    priorHistory = priorHistory.slice(0, -1);
+  }
+
   const contents = [
-    ...options.history.slice(-4).map((turn) => ({
+    ...priorHistory.slice(-6).map((turn) => ({
       role: turn.role === "user" ? "user" : "model",
-      parts: [{ text: turn.content.slice(0, 800) }],
+      parts: [{ text: turn.content.slice(0, 1000) }],
     })),
     {
       role: "user",
-      parts: [{ text: options.prompt.slice(0, 4000) }],
+      parts: [{ text: cleanPrompt.slice(0, 4000) }],
     },
   ];
 
@@ -92,7 +102,7 @@ export async function askGeminiCloud(options: {
     systemInstruction: {
       parts: [
         {
-          text: "Kamu adalah aiKu (Mode Cloud Gemini), asisten AI yang cerdas, akurat, dan ringkas dalam Bahasa Indonesia. Jawab langsung ke inti dengan jelas.",
+          text: "Kamu adalah aiKu, asisten pribadi cerdas, hangat, dan akrab milik pengguna di desktop Windows 11 mereka. Gunakan sapaan akrab ('aku' dan 'kamu'), jawab alami, nyambung dengan konteks obrolan sebelumnya, dan langsung ke inti dalam Bahasa Indonesia.",
         },
       ],
     },

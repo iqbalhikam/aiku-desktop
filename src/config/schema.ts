@@ -18,6 +18,17 @@ export const LlmConfigSchema = z
   })
   .strict();
 
+export const VoiceConfigSchema = z
+  .object({
+    ttsMode: z.enum(["system", "piper", "clone"]).default("system"),
+    activeProfileId: z
+      .string()
+      .regex(/^[a-z0-9_-]{3,48}$/)
+      .optional(),
+    speed: z.number().min(0.65).max(1.6).default(1.05),
+  })
+  .strict();
+
 export const AppConfigSchema = z
   .object({
     allowedDirectories: z
@@ -44,10 +55,12 @@ export const AppConfigSchema = z
     hotkey: z.string().trim().min(1).max(40).default("Alt+Space"),
     historyLogPath: z.string().min(1).default("./logs/history.json"),
     llm: LlmConfigSchema.default({}),
+    voice: VoiceConfigSchema.default({}),
   })
   .strict();
 
 export type LlmConfig = z.infer<typeof LlmConfigSchema>;
+export type VoiceConfig = z.infer<typeof VoiceConfigSchema>;
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 
 export function resolveAppConfig(raw: unknown, baseDir: string = process.cwd()): AppConfig {

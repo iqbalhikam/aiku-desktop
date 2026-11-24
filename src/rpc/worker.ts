@@ -10,11 +10,18 @@ import { type AppConfig, resolveAppConfig } from "../config/schema.js";
 import { askGeminiCloud, classifyCloudRouting } from "../core/llm/gemini-client.js";
 import { LocalLlamaEngine } from "../core/llm/llama-engine.js";
 import { ensureModelDownloaded, isModelDownloaded } from "../core/llm/model-downloader.js";
+import { OfflineVoiceCloneEngine } from "../core/voice/voice-clone-engine.js";
 import { PathGuard } from "../core/security/path-guard.js";
 import { SafeExecutor } from "../core/security/safe-executor.js";
 import type { ExecutionPlan } from "../core/security/schemas.js";
 import { scanHygieneIssues } from "../modules/file-manager/hygiene-detector.js";
-import { runLocalNaturalSearch } from "../modules/file-manager/local-search.js";
+import {
+  formatHumanBytes,
+  getIndexedEntriesCached,
+  getSandboxOverviewCached,
+  invalidateLocalSearchCache,
+  runLocalNaturalSearch,
+} from "../modules/file-manager/local-search.js";
 import { buildOrganizePlan } from "../modules/file-manager/orchestrator.js";
 import {
   queryWindowsAutoStart,
@@ -26,6 +33,7 @@ import { openWhatsAppReply, pollWindowsNotifications } from "../modules/notifica
 import {
   convertUnitExpression,
   evaluateSafeMathExpression,
+  executeAiActionTag,
   executeSafePresetCommand,
   extractTodoChecklist,
   formatBrokenPdfClipboard,
@@ -35,6 +43,7 @@ import {
   QuickNotesStore,
   runQuickTldr,
   SafePresetCommandSchema,
+  tryFallbackNaturalDesktopAction,
 } from "../modules/micro-assistant/index.js";
 
 const RpcRequestSchema = z
@@ -52,6 +61,7 @@ const RpcRequestSchema = z
       "rollback",
       "setupModel",
       "warmupModel",
+      "resetChat",
       "quickTldr",
       "formatClipboard",
       "extractTodos",
@@ -61,6 +71,11 @@ const RpcRequestSchema = z
       "pollNotifications",
       "replyWhatsApp",
       "draftReply",
+      "getVoiceStatus",
+      "setupVoiceEngine",
+      "saveVoiceSample",
+      "deleteVoiceProfile",
+      "synthesizeSpeech",
     ]),
     params: z.record(z.unknown()).default({}),
   })
@@ -154,6 +169,28 @@ const DraftReplyParamsSchema = z
   })
   .strict();
 
+const SaveVoiceSampleParamsSchema = z
+  .object({
+    name: z.string().trim().min(1).max(40).default("Suara Saya"),
+    wavBase64: z.string().min(128).max(35_000_000),
+  })
+  .strict();
+
+const DeleteVoiceProfileParamsSchema = z
+  .object({
+    profileId: z.string().regex(/^[a-z0-9_-]{3,48}$/),
+  })
+  .strict();
+
+const SynthesizeSpeechParamsSchema = z
+  .object({
+    text: z.string().trim().min(1).max(1500),
+    mode: z.enum(["piper", "clone"]).optional(),
+    profileId: z.string().regex(/^[a-z0-9_-]{3,48}$/).optional(),
+    speed: z.number().min(0.65).max(1.6).optional(),
+  })
+  .strict();
+
 const UpdateConfigParamsSchema = z
   .object({
     allowedDirectories: z.array(z.string().min(1)).min(1).optional(),
@@ -166,6 +203,9 @@ const UpdateConfigParamsSchema = z
     modelFileName: z.string().min(1).max(180).optional(),
     aiMode: z.enum(["offline", "hybrid"]).optional(),
     geminiApiKey: z.string().max(256).optional(),
+    ttsMode: z.enum(["system", "piper", "clone"]).optional(),
+    activeProfileId: z.string().max(48).nullable().optional(),
+    voiceSpeed: z.number().min(0.65).max(1.6).optional(),
   })
   .strict();
 
@@ -197,9 +237,11 @@ export class AiKuRpcWorker {
   private readonly configPath: string;
   private safeExecutor: SafeExecutor;
   private llmEngine: LocalLlamaEngine;
+  private readonly voiceEngine: OfflineVoiceCloneEngine;
   private readonly notesStore: QuickNotesStore;
   private readonly pendingPlans = new Map<string, ExecutionPlan>();
   private activeDownload: ActiveDownloadState | null = null;
+  private lastShownFiles: Array<{ relativePath: string; sizeBytes: number }> = [];
 
   constructor(config: AppConfig, configPath: string = path.resolve(process.cwd(), DEFAULT_CONFIG_FILENAME)) {
     this.config = config;
@@ -213,9 +255,16 @@ export class AiKuRpcWorker {
     this.llmEngine = new LocalLlamaEngine({
       llmConfig: config.llm,
     });
+    this.voiceEngine = new OfflineVoiceCloneEngine({
+      modelsDir: config.llm.modelsDir,
+      threads: config.llm.threads,
+    });
   }
 
-  public async handleRequest(rawLine: string): Promise<RpcResponse> {
+  public async handleRequest(
+    rawLine: string,
+    onStreamChunk?: (id: string | number, chunk: string) => void
+  ): Promise<RpcResponse> {
     let parsedJson: unknown;
     try {
       parsedJson = JSON.parse(rawLine);
@@ -243,7 +292,12 @@ export class AiKuRpcWorker {
     const { id, method, params } = parsedReq.data;
 
     try {
-      const result = await this.dispatch(method, params);
+      const emitChunk = onStreamChunk
+        ? (chunk: string): void => {
+            onStreamChunk(id, chunk);
+          }
+        : undefined;
+      const result = await this.dispatch(method, params, emitChunk);
       return { id, ok: true, result };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -253,20 +307,24 @@ export class AiKuRpcWorker {
 
   private async dispatch(
     method: z.infer<typeof RpcRequestSchema>["method"],
-    params: Record<string, unknown>
+    params: Record<string, unknown>,
+    onStreamChunk?: (chunk: string) => void
   ): Promise<unknown> {
     const primarySandbox = path.resolve(this.config.allowedDirectories[0] ?? "./sandbox");
 
     switch (method) {
       case "getStatus": {
-        const [modelReady, availableModels, regAutoStart] = await Promise.all([
+        const [modelReady, availableModels, regAutoStart, indexedEntries, voiceStatus] = await Promise.all([
           isModelDownloaded(this.config.llm),
           listAvailableModels(this.config.llm.modelsDir),
           queryWindowsAutoStart(),
+          getIndexedEntriesCached(this.config.allowedDirectories, this.safeExecutor.getPathGuard()),
+          this.voiceEngine.getStatus(this.config.voice),
         ]);
         return {
           allowedDirectories: this.config.allowedDirectories,
           primarySandbox: primarySandbox,
+          fileCount: indexedEntries.length,
           quarantineDirName: this.config.quarantineDirName,
           categories: this.config.categories,
           oldInstallerDays: this.config.oldInstallerDays,
@@ -280,6 +338,7 @@ export class AiKuRpcWorker {
           threads: this.config.llm.threads,
           aiMode: this.config.llm.aiMode,
           hasGeminiApiKey: Boolean(this.config.llm.geminiApiKey && this.config.llm.geminiApiKey.trim().length > 0),
+          voiceStatus,
         };
       }
 
@@ -309,6 +368,13 @@ export class AiKuRpcWorker {
             ? parsed.geminiApiKey.trim() || undefined
             : this.config.llm.geminiApiKey;
 
+        const nextActiveProfileId =
+          parsed.activeProfileId !== undefined
+            ? parsed.activeProfileId && parsed.activeProfileId.trim().length > 0
+              ? parsed.activeProfileId.trim()
+              : undefined
+            : this.config.voice.activeProfileId;
+
         const nextRaw = {
           allowedDirectories: parsed.allowedDirectories ?? this.config.allowedDirectories,
           quarantineDirName: this.config.quarantineDirName,
@@ -326,6 +392,11 @@ export class AiKuRpcWorker {
             aiMode: parsed.aiMode ?? this.config.llm.aiMode,
             ...(nextGeminiKey ? { geminiApiKey: nextGeminiKey } : {}),
           },
+          voice: {
+            ttsMode: parsed.ttsMode ?? this.config.voice.ttsMode,
+            speed: parsed.voiceSpeed ?? this.config.voice.speed,
+            ...(nextActiveProfileId ? { activeProfileId: nextActiveProfileId } : {}),
+          },
         };
         if (parsed.geminiApiKey !== undefined && parsed.geminiApiKey.trim() === "") {
           delete (nextRaw.llm as { geminiApiKey?: string }).geminiApiKey;
@@ -336,29 +407,52 @@ export class AiKuRpcWorker {
         const validatedConfig = resolveAppConfig(nextRaw, baseDir);
         new PathGuard(validatedConfig.allowedDirectories);
 
-        if (parsed.autoStartOnBoot !== undefined) {
+        const prevAutoStart = await queryWindowsAutoStart();
+        if (parsed.autoStartOnBoot !== undefined && parsed.autoStartOnBoot !== prevAutoStart) {
           await setWindowsAutoStart(parsed.autoStartOnBoot, baseDir);
         }
 
-        for (const dir of validatedConfig.allowedDirectories) {
-          await fs.mkdir(dir, { recursive: true });
+        const prevDirsKey = this.config.allowedDirectories.join("|").toLowerCase();
+        const nextDirsKey = validatedConfig.allowedDirectories.join("|").toLowerCase();
+        const dirsChanged = prevDirsKey !== nextDirsKey;
+
+        if (dirsChanged) {
+          for (const dir of validatedConfig.allowedDirectories) {
+            await fs.mkdir(dir, { recursive: true });
+          }
+          invalidateLocalSearchCache();
         }
 
         const tempPath = `${this.configPath}.tmp-${process.pid}-${Date.now()}`;
         await fs.writeFile(tempPath, JSON.stringify(validatedConfig, null, 2) + "\n", "utf8");
         await fs.rename(tempPath, this.configPath);
 
-        await this.llmEngine.disposeNow();
+        const llmEngineChanged =
+          validatedConfig.llm.modelFileName !== this.config.llm.modelFileName ||
+          validatedConfig.llm.threads !== this.config.llm.threads;
+
         this.config = validatedConfig;
-        this.safeExecutor = new SafeExecutor({
-          allowedDirectories: validatedConfig.allowedDirectories,
-          historyLogPath: validatedConfig.historyLogPath,
-          quarantineDirName: validatedConfig.quarantineDirName,
+        this.voiceEngine.updateOptions({
+          modelsDir: validatedConfig.llm.modelsDir,
+          threads: validatedConfig.llm.threads,
         });
-        this.llmEngine = new LocalLlamaEngine({
-          llmConfig: validatedConfig.llm,
-        });
-        this.pendingPlans.clear();
+
+        if (dirsChanged) {
+          this.safeExecutor = new SafeExecutor({
+            allowedDirectories: validatedConfig.allowedDirectories,
+            historyLogPath: validatedConfig.historyLogPath,
+            quarantineDirName: validatedConfig.quarantineDirName,
+          });
+          this.pendingPlans.clear();
+        }
+
+        if (llmEngineChanged) {
+          const oldEngine = this.llmEngine;
+          this.llmEngine = new LocalLlamaEngine({
+            llmConfig: validatedConfig.llm,
+          });
+          void oldEngine.disposeNow().catch(() => {});
+        }
 
         return {
           saved: true,
@@ -372,7 +466,7 @@ export class AiKuRpcWorker {
 
       case "chat": {
         const parsed = ChatParamsSchema.parse(params);
-        return this.handleChatIntent(parsed, primarySandbox);
+        return this.handleChatIntent(parsed, primarySandbox, onStreamChunk);
       }
 
       case "planOrganize": {
@@ -415,6 +509,7 @@ export class AiKuRpcWorker {
         }
         const executionResult = await this.safeExecutor.executePlan(plan, { dryRun: false });
         this.pendingPlans.delete(parsed.planId);
+        invalidateLocalSearchCache();
         return executionResult;
       }
 
@@ -448,7 +543,9 @@ export class AiKuRpcWorker {
 
       case "rollback": {
         const parsed = RollbackParamsSchema.parse(params);
-        return this.safeExecutor.rollback(parsed.transactionId);
+        const res = await this.safeExecutor.rollback(parsed.transactionId);
+        invalidateLocalSearchCache();
+        return res;
       }
 
       case "setupModel": {
@@ -523,8 +620,18 @@ export class AiKuRpcWorker {
       }
 
       case "warmupModel": {
+        void getSandboxOverviewCached(
+          this.config.allowedDirectories,
+          this.safeExecutor.getPathGuard()
+        ).catch(() => {});
         const warmed = await this.llmEngine.warmupModel();
         return { warmed };
+      }
+
+      case "resetChat": {
+        this.lastShownFiles = [];
+        await this.llmEngine.resetChatSession();
+        return { reset: true };
       }
 
       case "quickTldr": {
@@ -580,37 +687,103 @@ export class AiKuRpcWorker {
           message: prompt,
           history: [],
           sandboxContextSummary: "Tugas membuat draf balasan pesan singkat.",
+          stateless: true,
         });
         return { draft: draft.replace(/^["']|["']$/g, "").trim() };
+      }
+
+      case "getVoiceStatus": {
+        return this.voiceEngine.getStatus(this.config.voice);
+      }
+
+      case "setupVoiceEngine": {
+        const activeSetup = this.voiceEngine.startBackgroundSetup();
+        return { started: true, activeSetup };
+      }
+
+      case "saveVoiceSample": {
+        const parsed = SaveVoiceSampleParamsSchema.parse(params);
+        const createdProfile = await this.voiceEngine.createProfileFromWavBase64(parsed.name, parsed.wavBase64);
+
+        const nextConfig: AppConfig = {
+          ...this.config,
+          voice: {
+            ttsMode: "clone",
+            activeProfileId: createdProfile.id,
+            speed: this.config.voice.speed,
+          },
+        };
+        const tempPath = `${this.configPath}.tmp-${process.pid}-${Date.now()}`;
+        await fs.writeFile(tempPath, JSON.stringify(nextConfig, null, 2) + "\n", "utf8");
+        await fs.rename(tempPath, this.configPath);
+        this.config = nextConfig;
+
+        const voiceStatus = await this.voiceEngine.getStatus(this.config.voice);
+        return {
+          profile: createdProfile,
+          voiceStatus,
+        };
+      }
+
+      case "deleteVoiceProfile": {
+        const parsed = DeleteVoiceProfileParamsSchema.parse(params);
+        await this.voiceEngine.deleteProfile(parsed.profileId);
+        const remaining = await this.voiceEngine.listProfiles();
+
+        if (this.config.voice.activeProfileId === parsed.profileId) {
+          const fallbackId = remaining[0]?.id;
+          const nextConfig: AppConfig = {
+            ...this.config,
+            voice: {
+              ttsMode: fallbackId ? this.config.voice.ttsMode : "piper",
+              speed: this.config.voice.speed,
+              ...(fallbackId ? { activeProfileId: fallbackId } : {}),
+            },
+          };
+          const tempPath = `${this.configPath}.tmp-${process.pid}-${Date.now()}`;
+          await fs.writeFile(tempPath, JSON.stringify(nextConfig, null, 2) + "\n", "utf8");
+          await fs.rename(tempPath, this.configPath);
+          this.config = nextConfig;
+        }
+
+        const voiceStatus = await this.voiceEngine.getStatus(this.config.voice);
+        return { deleted: true, voiceStatus };
+      }
+
+      case "synthesizeSpeech": {
+        const parsed = SynthesizeSpeechParamsSchema.parse(params);
+        const effectiveMode =
+          parsed.mode ?? (this.config.voice.ttsMode === "piper" ? "piper" : "clone");
+        const effectiveProfileId = parsed.profileId ?? this.config.voice.activeProfileId;
+        const effectiveSpeed = parsed.speed ?? this.config.voice.speed;
+
+        return this.voiceEngine.synthesizeToWavBase64({
+          text: parsed.text,
+          mode: effectiveMode,
+          ...(effectiveProfileId ? { profileId: effectiveProfileId } : {}),
+          speed: effectiveSpeed,
+        });
       }
     }
   }
 
-  private async handleChatIntent(
-    input: z.infer<typeof ChatParamsSchema>,
-    primarySandbox: string
-  ): Promise<unknown> {
-    const lower = input.message.toLowerCase().trim();
+  private async buildPersonalLiveContext(
+    lowerQuery: string,
+    primarySandbox: string,
+    toolObservation?: string
+  ): Promise<string> {
+    const rawUser = os.userInfo().username || "Pengguna";
+    const ownerName = rawUser.charAt(0).toUpperCase() + rawUser.slice(1);
+    const parts: string[] = [`Pemilik: ${ownerName}`];
 
-    // 0a. Intent: Sapaan / Terima kasih singkat (instan, natural, anti-ngaco)
-    if (/^(halo|hai|hi|hello|pagi|selamat\s+pagi|siang|selamat\s+siang|sore|malam|tes|test)[!.?]*$/.test(lower)) {
-      return {
-        reply:
-          "Halo! Saya **aiKu**, siap membantu merapikan file, cek duplikat, ringkas clipboard, atau menjawab pertanyaan Anda. Ada yang bisa saya bantu?",
-        attachment: null,
-      };
-    }
-    if (/^(makasih|terima\s+kasih|thanks|thank\s+you|oke|ok|siap|mantap)[!.?]*$/.test(lower)) {
-      return {
-        reply: "Sama-sama! Kalau butuh bantuan lagi, panggil saya kapan saja ya.",
-        attachment: null,
-      };
+    if (toolObservation) {
+      parts.push(toolObservation);
+      return parts.join(" | ");
     }
 
-    // 0b. Intent: Jam / Tanggal lokal
-    if (/\b(jam\s+berapa|pukul\s+berapa|tanggal\s+berapa|hari\s+apa)\b/.test(lower)) {
-      const now = new Date();
-      const formatted = now.toLocaleString("id-ID", {
+    const asksTime = /\b(jam|pukul|tanggal|hari|waktu|sekarang|pagi|siang|sore|malam)\b/.test(lowerQuery);
+    if (asksTime) {
+      const nowFormatted = new Date().toLocaleString("id-ID", {
         weekday: "long",
         day: "numeric",
         month: "long",
@@ -618,198 +791,224 @@ export class AiKuRpcWorker {
         hour: "2-digit",
         minute: "2-digit",
       });
-      return {
-        reply: `Sekarang **${formatted}** (waktu lokal laptop Anda).`,
-        attachment: null,
-      };
+      parts.push(`Waktu lokal: ${nowFormatted}`);
     }
 
-    // 0b1. Intent: Kalkulator instan & Konverter Satuan (0 MB AI RAM, tanpa eval)
-    const unitConverted = convertUnitExpression(input.message);
-    if (unitConverted !== null) {
-      return { reply: unitConverted, attachment: null };
-    }
-    const mathResult = evaluateSafeMathExpression(input.message);
-    if (mathResult !== null) {
-      return {
-        reply: `\`${input.message.trim()}\` = **${mathResult.toLocaleString("id-ID", { maximumFractionDigits: 6 })}**`,
-        attachment: null,
-      };
-    }
-
-    // 0b1b. Intent: Generator Password Kuat Kriptografis (100% lokal)
-    const pwMatch = lower.match(/\b(?:buat|bikin|generate)\s+password(?:\s+(\d{1,2}))?\b/);
-    if (pwMatch) {
-      const len = pwMatch[1] ? Number.parseInt(pwMatch[1], 10) : 16;
-      const password = generateSecurePassword(len);
-      return {
-        reply: `Password kuat (${password.length} karakter, dibuat lokal):\n\`${password}\``,
-        attachment: null,
-      };
-    }
-
-    // 0b1c. Intent: Quick Reminder dengan Suara ("ingatkan aku/saya 5 detik lagi ...")
-    const reminderMatch = input.message
-      .trim()
-      .match(/^(?:ingatkan(?:\s+(?:saya|aku|ku))?|remind(?:\s+me)?)\s+(\d{1,3})\s*(menit|detik|m|s)(?:\s+lagi)?(?:\s+(?:untuk\s+)?(.+))?$/i);
-    if (reminderMatch?.[1] && reminderMatch[2]) {
-      const amount = Number.parseInt(reminderMatch[1], 10);
-      const unit = reminderMatch[2].toLowerCase();
-      const rawNote = (reminderMatch[3] ?? "").replace(/^(ya|dong|deh|nih)[!.?]*$/i, "").trim();
-      const reminderText = rawNote || "Waktu pengingat selesai";
-      const seconds =
-        unit === "detik" || unit === "s"
-          ? Math.min(Math.max(amount, 5), 3600)
-          : Math.min(Math.max(amount, 1), 180) * 60;
-      const label = unit === "detik" || unit === "s" ? `${amount} detik` : `${amount} menit`;
-      return {
-        reply: `Siap! Pengingat diset **${label}** lagi: **"${reminderText}"** (akan berbunyi & dibacakan otomatis).`,
-        attachment: { type: "reminder", seconds, text: reminderText },
-      };
-    }
-
-    // 0b1d. Intent: Kontrol / Info Music Player Windows 11
-    if (/\b(lagu\s+apa|musik\s+apa|now\s+playing|sedang\s+diputar)\b/.test(lower)) {
-      const media = await queryWindowsMedia("get");
-      return {
-        reply: media.active
-          ? `Sedang diputar (${media.status}): **${media.title || "Tanpa Judul"}**${media.artist ? ` — ${media.artist}` : ""}`
-          : "Tidak ada pemutar musik yang sedang aktif saat ini.",
-        attachment: null,
-      };
-    }
-    if (/\b(pause\s+musik|play\s+musik|jeda\s+lagu|lanjut\s+lagu)\b/.test(lower)) {
-      const media = await queryWindowsMedia("toggle");
-      return {
-        reply: media.active
-          ? `Musik di-toggle (**${media.status}**): **${media.title || "Media"}**`
-          : "Tidak ada pemutar musik yang aktif.",
-        attachment: null,
-      };
-    }
-    if (/\b(next\s+lagu|lagu\s+berikutnya|skip\s+lagu)\b/.test(lower)) {
-      const media = await queryWindowsMedia("next");
-      return {
-        reply: media.active
-          ? `Berpindah ke lagu berikutnya: **${media.title || "Media"}**`
-          : "Tidak ada pemutar musik yang aktif.",
-        attachment: null,
-      };
-    }
-
-    // 0b2. Intent: Timer / Pomodoro Live Activity di Dynamic Island
-    const timerMatch = lower.match(/\b(?:timer|pomodoro|fokus|hitung\s+mundur)(?:\s+(\d{1,3})\s*(menit|detik|m|s)?)?\b/);
-    if (timerMatch) {
-      const rawNum = timerMatch[1] ? Number.parseInt(timerMatch[1], 10) : 25;
-      const unit = timerMatch[2] ?? "menit";
-      const seconds =
-        unit === "detik" || unit === "s"
-          ? Math.min(Math.max(rawNum, 5), 3600)
-          : Math.min(Math.max(rawNum, 1), 180) * 60;
-      const label = unit === "detik" || unit === "s" ? `${rawNum} detik` : `${rawNum} menit`;
-      return {
-        reply: `Timer fokus **${label}** dimulai! Anda bisa mengecilkan Dynamic Island dan lihat hitung mundurnya langsung di kapsul atas.`,
-        attachment: { type: "timer", seconds },
-      };
-    }
-
-    // 0b3. Intent: Quick Sticky Notes lokal (catat ..., lihat catatan, hapus catatan N)
-    const addNoteMatch = input.message.trim().match(/^(?:catat|simpan\s+catatan|note)\s*:?\s+(.+)$/i);
-    if (addNoteMatch?.[1]) {
-      const saved = await this.notesStore.add(addNoteMatch[1]);
-      return {
-        reply: `Catatan tersimpan: **"${saved.text}"** (ketik \`lihat catatan\` kapan saja untuk membukanya).`,
-        attachment: null,
-      };
-    }
-
-    const delNoteMatch = lower.match(/^hapus\s+catatan\s+#?(\d+)$/);
-    if (delNoteMatch?.[1]) {
-      const removed = await this.notesStore.removeByIndex(Number.parseInt(delNoteMatch[1], 10));
-      return {
-        reply: removed
-          ? `Catatan **"${removed.text}"** sudah dihapus.`
-          : "Nomor catatan tidak ditemukan. Ketik `lihat catatan` untuk melihat daftarnya.",
-        attachment: null,
-      };
-    }
-
-    if (/\b(lihat\s+catatan|catatan\s+saya|daftar\s+catatan|my\s+notes)\b/.test(lower)) {
-      const notes = await this.notesStore.readAll();
-      if (notes.length === 0) {
-        return {
-          reply: "Belum ada catatan tersimpan. Ketik `catat <isi catatan>` untuk membuat catatan cepat!",
-          attachment: null,
-        };
-      }
-      const list = notes.map((n, i) => `${i + 1}. ${n.text}`).join("\n");
-      return {
-        reply: `**Catatan Cepat Anda (${notes.length}):**\n${list}\n\n_(Ketik \`hapus catatan 1\` untuk menghapus)_`,
-        attachment: null,
-      };
-    }
-
-    // 0b4. Intent: Pengaturan dengan Bantuan AI (Non-Sensitif langsung diterapkan, Sensitif munculkan Security Alert!)
-    const aiSettingRes = await this.tryHandleAiSettingIntent(input.message.trim(), lower);
-    if (aiSettingRes !== null) {
-      return aiSettingRes;
-    }
-
-    // 0c. Intent: Info Laptop Read-Only yang Aman (node:os, tanpa shell)
-    if (
-      /\b(laptop\s+(saya|ini|ku)|spek\s+laptop|spesifikasi|info\s+laptop|tentang\s+laptop|ram\s+(saya|tinggal|berapa)|cpu\s+(saya|apa))\b/.test(
-        lower
-      )
-    ) {
-      const cpuModel = os.cpus()[0]?.model?.trim() ?? "Tidak diketahui";
+    const asksHardware =
+      /\b(laptop|spek|spesifikasi|ram|memori|memory|cpu|prosesor|processor|uptime|perangkat|pc)\b/.test(
+        lowerQuery
+      );
+    if (asksHardware) {
+      const cpuModel = os.cpus()[0]?.model?.trim() ?? "CPU x64";
       const cpuCores = os.cpus().length;
       const totalGb = (os.totalmem() / 1024 ** 3).toFixed(1);
       const freeGb = (os.freemem() / 1024 ** 3).toFixed(1);
       const usedGb = ((os.totalmem() - os.freemem()) / 1024 ** 3).toFixed(1);
-      const uptimeHours = (os.uptime() / 3600).toFixed(1);
-      return {
-        reply: [
-          "Berikut informasi **read-only** yang saya ketahui tentang laptop Anda (tanpa akses sistem sensitif):",
-          `• **Perangkat:** \`${os.hostname()}\` (Windows ${os.release()})`,
-          `• **CPU:** ${cpuModel} (${cpuCores} threads, AI dibatasi maks ${this.config.llm.threads} threads)`,
-          `• **RAM:** Terpakai **${usedGb} GB** / **${totalGb} GB** (tersisa **${freeGb} GB**)`,
-          `• **Uptime:** ${uptimeHours} jam`,
-          `• **Sandbox Aktif:** \`${primarySandbox}\``,
-        ].join("\n"),
-        attachment: null,
-      };
+      parts.push(
+        `Laptop ${os.hostname()}: ${cpuModel} (${cpuCores} threads), RAM terpakai ${usedGb} GB / ${totalGb} GB (sisa RAM kosong ${freeGb} GB), Sandbox: ${primarySandbox}`
+      );
     }
 
-    // 0d. Intent: Menanyakan kemampuan / fitur aiKu
+    const asksFilesOrFollowUp =
+      /\b(file|berkas|dokumen|folder|desktop|sandbox|salah\s+satu|namanya|itu|tadi|tersebut|contoh|mana|ukuran)\b/.test(
+        lowerQuery
+      );
+    if (asksFilesOrFollowUp) {
+      if (this.lastShownFiles.length > 0) {
+        const recentSample = this.lastShownFiles
+          .slice(0, 6)
+          .map((f) => (f.sizeBytes > 0 ? `${f.relativePath} (${formatHumanBytes(f.sizeBytes)})` : f.relativePath))
+          .join(", ");
+        parts.push(
+          `Contoh nama file nyata dari daftar sebelumnya: ${recentSample}. Jika pengguna menanyakan salah satu nama file tersebut, sebutkan langsung nama filenya!`
+        );
+      } else {
+        const overview = await getSandboxOverviewCached(
+          this.config.allowedDirectories,
+          this.safeExecutor.getPathGuard()
+        );
+        const topFiles = overview.topFiles
+          .slice(0, 5)
+          .map((f) => f.relativePath)
+          .join(", ");
+        const topFolders = overview.topFolders.slice(0, 5).join(", ");
+        parts.push(`Folder Desktop: [${topFolders}] | Contoh file: [${topFiles}]`);
+      }
+    }
+
+    const asksNotes = /\b(catatan|note|notes|agenda|ingat)\b/.test(lowerQuery);
+    if (asksNotes) {
+      const notes = await this.notesStore.readAll();
+      parts.push(
+        notes.length > 0
+          ? `Catatan tersimpan (${notes.length}): ${notes
+              .slice(0, 5)
+              .map((n, i) => `#${i + 1} "${n.text}"`)
+              .join("; ")}`
+          : "Belum ada catatan tersimpan saat ini."
+      );
+    }
+
+    const asksMedia = /\b(lagu|musik|music|spotify|nyanyi|diputar|playing)\b/.test(lowerQuery);
+    if (asksMedia) {
+      const media = await queryWindowsMedia("get");
+      parts.push(
+        media.active && media.title
+          ? `Lagu sedang diputar (${media.status}): "${media.title}"${media.artist ? ` oleh ${media.artist}` : ""}`
+          : "Tidak ada pemutar musik yang sedang aktif."
+      );
+    }
+
+    return parts.join(" | ");
+  }
+
+  private async handleChatIntent(
+    input: z.infer<typeof ChatParamsSchema>,
+    primarySandbox: string,
+    onStreamChunk?: (chunk: string) => void
+  ): Promise<unknown> {
+    const lower = input.message.toLowerCase().trim();
+    let toolObservation: string | undefined;
+    let pendingAttachment: unknown = null;
+    let mustIncludeExactSnippet: string | undefined;
+    let alreadyExecutedDesktopAction = false;
+
+    // 1. Pengaturan dengan Bantuan AI:
+    //    - Sensitif (Sandbox / API Key / Windows Startup) -> tampilkan kartu konfirmasi keamanan P0 secara eksplisit.
+    //    - Non-sensitif -> terapkan langsung lalu biarkan AI mengonfirmasi secara natural!
+    const aiSettingRes = (await this.tryHandleAiSettingIntent(input.message.trim(), lower)) as
+      | { reply: string; attachment?: { type?: string; notifTitle?: string; notifSub?: string } | null }
+      | null;
+    if (aiSettingRes !== null) {
+      if (aiSettingRes.attachment?.type === "sensitive_alert") {
+        return aiSettingRes;
+      }
+      pendingAttachment = aiSettingRes.attachment ?? null;
+      toolObservation = `Pengaturan berhasil langsung diterapkan: ${aiSettingRes.reply.replace(/\*\*/g, "")}`;
+      alreadyExecutedDesktopAction = true;
+    }
+
+    // 2. Kalkulator, Konversi Satuan, & Generator Password Kriptografis
+    if (!toolObservation) {
+      const unitConverted = convertUnitExpression(input.message);
+      if (unitConverted !== null) {
+        toolObservation = `Hasil konversi satuan presisi: ${unitConverted.replace(/\*\*/g, "")}`;
+      } else {
+        const mathResult = evaluateSafeMathExpression(input.message);
+        if (mathResult !== null) {
+          const formattedNum = mathResult.toLocaleString("id-ID", { maximumFractionDigits: 6 });
+          toolObservation = `Hasil perhitungan matematika presisi dari "${input.message.trim()}" adalah ${formattedNum}.`;
+        }
+      }
+    }
+
+    if (!toolObservation) {
+      const pwMatch = lower.match(/\b(?:buat|bikin|generate)\s+password(?:\s+(\d{1,2}))?\b/);
+      if (pwMatch) {
+        const len = pwMatch[1] ? Number.parseInt(pwMatch[1], 10) : 16;
+        const password = generateSecurePassword(len);
+        mustIncludeExactSnippet = password;
+        toolObservation = `Password kuat kriptografis (${password.length} karakter) sudah dibuat secara lokal: \`${password}\`. Sampaikan dengan ramah dan cantumkan persis password tersebut.`;
+      }
+    }
+
+    // 3. Pengingat Suara & Timer Fokus di Dynamic Island
+    if (!toolObservation) {
+      const reminderMatch = input.message
+        .trim()
+        .match(
+          /^(?:ingatkan(?:\s+(?:saya|aku|ku))?|remind(?:\s+me)?)\s+(\d{1,3})\s*(menit|detik|m|s)(?:\s+lagi)?(?:\s+(?:untuk\s+)?(.+))?$/i
+        );
+      if (reminderMatch?.[1] && reminderMatch[2]) {
+        const amount = Number.parseInt(reminderMatch[1], 10);
+        const unit = reminderMatch[2].toLowerCase();
+        const rawNote = (reminderMatch[3] ?? "").replace(/^(ya|dong|deh|nih)[!.?]*$/i, "").trim();
+        const reminderText = rawNote || "Waktu pengingat selesai";
+        const seconds =
+          unit === "detik" || unit === "s"
+            ? Math.min(Math.max(amount, 5), 3600)
+            : Math.min(Math.max(amount, 1), 180) * 60;
+        const label = unit === "detik" || unit === "s" ? `${amount} detik` : `${amount} menit`;
+        pendingAttachment = { type: "reminder", seconds, text: reminderText };
+        toolObservation = `Pengingat suara sudah berhasil diaktifkan untuk ${label} ke depan dengan pesan "${reminderText}". Nanti kapsul Dynamic Island akan berbunyi dan membacakannya otomatis.`;
+        alreadyExecutedDesktopAction = true;
+      }
+    }
+
+    if (!toolObservation) {
+      const timerMatch = lower.match(
+        /^(?:(?:mulai|pasang|set|buat|nyalakan)\s+)?(?:timer(?:\s+fokus)?|pomodoro|hitung\s+mundur)(?:\s+(\d{1,3})\s*(menit|detik|m|s)?)?[!.]*$/
+      );
+      if (timerMatch) {
+        const rawNum = timerMatch[1] ? Number.parseInt(timerMatch[1], 10) : 25;
+        const unit = timerMatch[2] ?? "menit";
+        const seconds =
+          unit === "detik" || unit === "s"
+            ? Math.min(Math.max(rawNum, 5), 3600)
+            : Math.min(Math.max(rawNum, 1), 180) * 60;
+        const label = unit === "detik" || unit === "s" ? `${rawNum} detik` : `${rawNum} menit`;
+        pendingAttachment = { type: "timer", seconds };
+        toolObservation = `Timer fokus selama ${label} sudah dimulai sekarang dan hitung mundurnya berjalan live di kapsul atas Dynamic Island.`;
+        alreadyExecutedDesktopAction = true;
+      }
+    }
+
+    // 4. Kontrol Musik Windows 11 (Play/Pause/Next)
+    if (!toolObservation && /\b(pause\s+musik|play\s+musik|jeda\s+lagu|lanjut\s+lagu)\b/.test(lower)) {
+      const media = await queryWindowsMedia("toggle");
+      toolObservation = media.active
+        ? `Pemutar musik berhasil di-toggle (status sekarang: ${media.status}) untuk lagu "${media.title || "Media"}".`
+        : "Saat dicek tidak ada pemutar musik yang sedang aktif di Windows.";
+      alreadyExecutedDesktopAction = true;
+    } else if (!toolObservation && /\b(next\s+lagu|lagu\s+berikutnya|skip\s+lagu)\b/.test(lower)) {
+      const media = await queryWindowsMedia("next");
+      toolObservation = media.active
+        ? `Berhasil melompat ke lagu berikutnya: "${media.title || "Media"}".`
+        : "Saat dicek tidak ada pemutar musik yang sedang aktif di Windows.";
+      alreadyExecutedDesktopAction = true;
+    }
+
+    // 5. Catatan Cepat Pribadi (Tambah / Hapus / Lihat)
+    if (!toolObservation) {
+      const addNoteMatch = input.message.trim().match(/^(?:catat|simpan\s+catatan|note)\s*:?\s+(.+)$/i);
+      if (addNoteMatch?.[1]) {
+        const saved = await this.notesStore.add(addNoteMatch[1]);
+        toolObservation = `Catatan pribadi baru berhasil disimpan: "${saved.text}".`;
+        alreadyExecutedDesktopAction = true;
+      } else {
+        const delNoteMatch = lower.match(/^hapus\s+catatan\s+#?(\d+)$/);
+        if (delNoteMatch?.[1]) {
+          const removed = await this.notesStore.removeByIndex(Number.parseInt(delNoteMatch[1], 10));
+          toolObservation = removed
+            ? `Catatan "${removed.text}" berhasil dihapus dari daftar catatan pribadi.`
+            : "Nomor catatan tersebut tidak ditemukan di daftar catatan pengguna.";
+          alreadyExecutedDesktopAction = true;
+        }
+      }
+    }
+
+    // 6. Peluncur Aplikasi Preset Aman
+    if (!toolObservation) {
+      const matchedPreset = matchSafePresetCommand(input.message);
+      if (matchedPreset !== null) {
+        const cmdResult = await executeSafePresetCommand({
+          command: matchedPreset,
+          sandboxRoot: primarySandbox,
+          quarantineDirName: this.config.quarantineDirName,
+          pathGuard: this.safeExecutor.getPathGuard(),
+        });
+        toolObservation = `Aksi desktop sudah langsung dijalankan: ${cmdResult.message} (jangan tambahkan tag [OPEN_...] lagi karena aplikasi sudah terbuka).`;
+        alreadyExecutedDesktopAction = true;
+      }
+    }
+
+    // 7. Perapian File (Dry-Run), Deteksi Duplikat SHA-256, & Riwayat Rollback
     if (
-      /\b(apa\s+yang\s+bisa\s+(kamu|anda|kau|lu)\s+lakukan|bisa\s+ngapa\s*aja|bisa\s+ngapain|kamu\s+bisa\s+apa|anda\s+bisa\s+apa|bisa\s+bantu\s+apa|fitur\s+apa)\b/.test(
+      !toolObservation &&
+      /^(?:tolong\s+|coba\s+)?(rapikan|rapihin|organize|organisir|beresin|bereskan)(?:\s+(?:semua\s+)?(?:file|berkas|dokumen|folder|desktop|sandbox))?(?:\s+(?:saya|ku|ini|pakai\s+ai|dengan\s+ai))?[!.]*$/.test(
         lower
       )
     ) {
-      return {
-        reply:
-          "Saya **aiKu**, asisten desktop lokal offline Anda. Saya bisa membantu:\n• **Rapikan File** di sandbox secara otomatis (dengan preview Dry-Run aman)\n• **Cek Duplikat SHA-256 & Installer Lama** ke `_AI_Karantina` (tanpa hapus permanen)\n• **Cari File Lokal** & **Undo / Rollback** dengan verifikasi SHA-256\n• **Info Laptop (CPU/RAM)**, **Ringkas Clipboard**, **Rapikan Teks PDF**, dan **Ngobrol Live** dengan suara!",
-        attachment: null,
-      };
-    }
-
-    // 0e. Intent: Safe Command Launcher (preset aman ter-hardcode, bukan shell bebas)
-    const matchedPreset = matchSafePresetCommand(input.message);
-    if (matchedPreset !== null) {
-      const cmdResult = await executeSafePresetCommand({
-        command: matchedPreset,
-        sandboxRoot: primarySandbox,
-        quarantineDirName: this.config.quarantineDirName,
-        pathGuard: this.safeExecutor.getPathGuard(),
-      });
-      return {
-        reply: cmdResult.message,
-        attachment: null,
-      };
-    }
-
-    // 1. Intent: Rapikan / Organize file (wajib Dry-Run preview dulu)
-    if (/\b(rapikan|rapihin|organize|organisir|kelompokkan|beresin|bereskan)\b/.test(lower)) {
       const wantAi = input.enableAiForFiles || /\b(pakai ai|dengan ai|smart|qwen)\b/.test(lower);
       const plan = await buildOrganizePlan({
         targetDir: primarySandbox,
@@ -819,18 +1018,19 @@ export class AiKuRpcWorker {
         enableAi: wantAi,
       });
       this.storePendingPlan(plan);
-      const reply =
+      pendingAttachment = { type: "plan", plan, sandboxRoot: primarySandbox };
+      toolObservation =
         plan.operations.length > 0
-          ? `Saya sudah menyiapkan rencana perapian (**Dry-Run Preview**) untuk **${plan.operations.length} file** di sandbox${wantAi ? " (dengan AI Qwen 0.5B)" : " (Fast Path)"}. Silakan tinjau dulu sebelum klik **Konfirmasi & Eksekusi**.`
-          : "Semua file di root sandbox sudah rapi atau tidak ada yang perlu dipindahkan saat ini.";
-      return {
-        reply,
-        attachment: { type: "plan", plan, sandboxRoot: primarySandbox },
-      };
-    }
-
-    // 2. Intent: Cek duplikat / installer lama -> Karantina (Soft Delete)
-    if (/\b(duplikat|duplicate|kembar|karantina|installer\s+lama|bersihkan|hygiene)\b/.test(lower)) {
+          ? `Rencana perapian aman (Dry-Run Preview) selesai disiapkan untuk ${plan.operations.length} file di root sandbox. Pengguna tinggal meninjau daftar pratinjau dan menekan Apply Changes jika setuju.`
+          : "Setelah dipindai, seluruh file di root folder sandbox sudah tertata rapi sehingga tidak ada file yang perlu dipindahkan.";
+      alreadyExecutedDesktopAction = true;
+    } else if (
+      !toolObservation &&
+      (/\b(cek\s+duplikat|cari\s+duplikat|file\s+duplikat|file\s+kembar|karantina|installer\s+lama|hygiene)\b/.test(
+        lower
+      ) ||
+        /^(?:cek\s+)?(duplikat|duplicate)[!.]*$/.test(lower))
+    ) {
       const scan = await scanHygieneIssues({
         sandboxDir: primarySandbox,
         quarantineDirName: this.config.quarantineDirName,
@@ -839,111 +1039,204 @@ export class AiKuRpcWorker {
       });
       const plan = await this.safeExecutor.createPlan(scan.proposals);
       this.storePendingPlan(plan);
-      const reply =
+      pendingAttachment = { type: "plan", plan, sandboxRoot: primarySandbox };
+      toolObservation =
         plan.operations.length > 0
-          ? `Ditemukan **${scan.duplicateGroupsCount} grup duplikat SHA-256** dan **${scan.oldInstallersCount} installer lama**. Demi keamanan (tanpa hapus permanen), file diusulkan pindah ke folder \`${this.config.quarantineDirName}\`.`
-          : "Sandbox bersih! Tidak ditemukan file duplikat SHA-256 maupun installer lama.";
-      return {
-        reply,
-        attachment: { type: "plan", plan, sandboxRoot: primarySandbox },
-      };
-    }
-
-    // 3. Intent: Lihat riwayat transaksi / rollback
-    if (/\b(riwayat|history|rollback|undo|kembalikan\s+file)\b/.test(lower)) {
+          ? `Pemindaian SHA-256 menemukan ${scan.duplicateGroupsCount} grup file duplikat dan ${scan.oldInstallersCount} installer lama (> ${this.config.oldInstallerDays} hari). Rencana pemindahan aman (tanpa hapus permanen) ke folder ${this.config.quarantineDirName} sudah dibuka di layar Preview.`
+          : "Pemindaian SHA-256 selesai: folder bersih, tidak ditemukan file kembar maupun installer usang.";
+      alreadyExecutedDesktopAction = true;
+    } else if (
+      !toolObservation &&
+      (/\b(riwayat\s+(?:file|transaksi|sha|pindah)|rollback|undo\s+file|kembalikan\s+file)\b/.test(lower) ||
+        /^(?:lihat\s+)?(riwayat|history)[!.]*$/.test(lower))
+    ) {
       const records = [...(await this.safeExecutor.getTransactionLog().readAll())].reverse().slice(0, 10);
-      const reply =
+      pendingAttachment = { type: "history", records };
+      toolObservation =
         records.length > 0
-          ? `Berikut ${records.length} transaksi terakhir dari audit log SHA-256. Anda bisa klik **Rollback** pada transaksi aktif.`
-          : "Belum ada riwayat pemindahan file di `./logs/history.json`.";
-      return {
-        reply,
-        attachment: { type: "history", records },
-      };
+          ? `Panel riwayat transaksi SHA-256 dibuka menampilkan ${records.length} operasi terakhir yang bisa di-Rollback kapan saja.`
+          : "Belum ada riwayat pemindahan file yang tercatat di log SHA-256.";
+      alreadyExecutedDesktopAction = true;
     }
 
-    // 4. Intent: Daftar isi file / cari file lokal (abaikan "cari tau / cari tahu / di internet" -> biarkan ke AI!)
+    // 8. Pencarian File Lokal & Pertanyaan Isi Folder (Breadth-First: mengutamakan isi utama Desktop!)
     const isKnowledgeQuery = /\b(cari\s+tau|cari\s+tahu|di\s+internet|google|berita|harga\s+saham)\b/.test(lower);
     const isExplicitFileQuery =
-      /\b(ada\s+(file\s+)?apa\s*(aja|saja)?|isinya\s+apa|apa\s+(aja|saja)\s+isinya|isi\s+sandbox|isi\s+folder|daftar\s+file|list\s+file|lihat\s+file|semua\s+file)\b/.test(
+      /\b(ada\s+(file|folder)\s+apa|apa\s*(aja|saja)\s+isi\s+(folder|desktop|sandbox)|isinya\s+apa|isi\s+sandbox|isi\s+folder|isi\s+desktop|daftar\s+file|list\s+file|lihat\s+file|semua\s+file)\b/.test(
         lower
       ) ||
-      (/\b(cari|carikan|temukan)\b/.test(lower) &&
-        /\b(file|berkas|dokumen|pdf|docx|doc|txt|md|mp4|mkv|jpg|png|zip|rar|exe|folder)\b/.test(lower));
+      (/\b(cari|carikan|temukan|ada\s+file)\b/.test(lower) &&
+        /\b(file|berkas|dokumen|pdf|docx|doc|txt|md|mp4|mkv|avi|jpg|png|zip|rar|exe|xlsx|pptx|folder)\b/.test(
+          lower
+        ));
 
-    if (!isKnowledgeQuery && isExplicitFileQuery) {
-      const searchResult = await runLocalNaturalSearch({
-        query: input.message,
-        allowedDirectories: this.config.allowedDirectories,
-        pathGuard: this.safeExecutor.getPathGuard(),
-        llmClient: this.llmEngine,
-        useAi: false,
-      });
+    if (!toolObservation && !isKnowledgeQuery && isExplicitFileQuery) {
+      const [searchResult, overview] = await Promise.all([
+        runLocalNaturalSearch({
+          query: input.message,
+          allowedDirectories: this.config.allowedDirectories,
+          pathGuard: this.safeExecutor.getPathGuard(),
+          llmClient: this.llmEngine,
+          useAi: false,
+        }),
+        getSandboxOverviewCached(this.config.allowedDirectories, this.safeExecutor.getPathGuard()),
+      ]);
+
       const totalFound = searchResult.matches.length;
-      const files = searchResult.matches.slice(0, 30).map((m) => ({
+      const files = searchResult.matches.slice(0, 20).map((m) => ({
         relativePath: m.relativePath,
         extension: m.extension,
         sizeBytes: m.sizeBytes,
         modifiedAt: m.modifiedAt.toISOString(),
       }));
-      const dirLabels = this.config.allowedDirectories.map((d) => path.basename(d) || d).join(", ");
-      const reply =
+
+      if (files.length > 0) {
+        this.lastShownFiles = files.map((f) => ({
+          relativePath: f.relativePath,
+          sizeBytes: f.sizeBytes,
+        }));
+      }
+
+      pendingAttachment = { type: "files", files };
+      const sampleNames = files
+        .slice(0, 5)
+        .map((f) => (f.sizeBytes > 0 ? `${f.relativePath} (${formatHumanBytes(f.sizeBytes)})` : f.relativePath))
+        .join(", ");
+      const folderNames = overview.topFolders.slice(0, 5).join(", ");
+
+      toolObservation =
         totalFound > 0
-          ? `Ditemukan **${totalFound} file** di folder terdaftar (${dirLabels})${totalFound > 30 ? " — menampilkan 30 teratas" : ""}:`
-          : `Tidak ada file yang cocok di folder terdaftar (${dirLabels}).`;
-      return {
-        reply,
-        attachment: { type: "files", files },
-      };
+          ? `Ditemukan ${totalFound} file di folder pengguna (daftar terlampir di bawah chat). Folder utama: [${folderNames}]. Contoh file asli: [${sampleNames}]. Rangkum isi folder ini dalam 2 kalimat santai saja tanpa daftar bernomor, dan sebutkan 2-3 nama folder/file contohnya!`
+          : `Tidak ditemukan file yang cocok dengan pencarian "${input.message}" di dalam folder terdaftar.`;
+      alreadyExecutedDesktopAction = true;
     }
 
-    // 5. Hybrid Smart Routing: jika mode Hybrid & Gemini API Key aktif -> gunakan Gemini untuk riset/soal sulit!
+    // 9. Hybrid Smart Routing ke Gemini 2.5 Flash HANYA untuk riset web / soal umum rumit
+    //    (Pertanyaan tentang file lokal, folder, laptop, catatan, atau lanjutan file tetap 100% lokal demi privasi P0 & konteks Desktop!)
+    const isPersonalOrFollowUpTopic =
+      Boolean(toolObservation) ||
+      /\b(folder|file|berkas|desktop|sandbox|laptop|spek|ram|cpu|catatan|timer|pengingat|salah\s+satu|itu\s+apa|namanya\s+apa|yang\s+tadi|ukurannya)\b/.test(
+        lower
+      );
+
     const routing = classifyCloudRouting(input.message);
     const geminiKey = this.config.llm.geminiApiKey?.trim();
-    if (this.config.llm.aiMode === "hybrid" && geminiKey && routing.useGemini) {
+    if (!isPersonalOrFollowUpTopic && this.config.llm.aiMode === "hybrid" && geminiKey && routing.useGemini) {
       try {
         const cloudRes = await askGeminiCloud({
           apiKey: geminiKey,
           prompt: routing.cleanedPrompt,
-          history: input.history.slice(-4),
+          history: input.history.slice(-6),
           enableWebSearch: routing.enableWebSearch,
         });
         const sourceLines =
           cloudRes.sources.length > 0
             ? `\n\n**Sumber Web:**\n${cloudRes.sources.map((s) => `• ${s.title} (${s.url})`).join("\n")}`
             : "";
-        const badge = cloudRes.usedWebSearch ? "**[Gemini + Google Search]**" : "**[Gemini 2.5 Flash]**";
         return {
-          reply: `${badge}\n${cloudRes.reply}${sourceLines}`,
+          reply: `${cloudRes.reply}${sourceLines}`,
           attachment: null,
         };
       } catch {
-        // Jika internet mati / kuota habis -> otomatis fallback mulus ke model lokal!
+        // Fallback otomatis ke model AI lokal jika offline / kuota habis
       }
     }
 
-    // 6. Obrolan bebas / fallback lokal -> Model Lokal On-Demand (100% offline)
-    const allFiles = await runLocalNaturalSearch({
-      query: "semua file",
-      allowedDirectories: this.config.allowedDirectories,
-      pathGuard: this.safeExecutor.getPathGuard(),
-      useAi: false,
-    });
-    const sampleNames = allFiles.matches
-      .slice(0, 12)
-      .map((f) => f.relativePath)
-      .join(", ");
-    const sandboxContextSummary = `Folder sandbox berisi ${allFiles.matches.length} file (${sampleNames || "kosong"}).`;
+    // 10. Sintesis Respons Asisten Pribadi aiKu Secara Real-Time (Streaming + Konteks Ringkas Presisi!)
+    const liveContext = await this.buildPersonalLiveContext(lower, primarySandbox, toolObservation);
 
-    const reply = await this.llmEngine.chat({
+    let streamHoldBuffer = "";
+    let insideBracketTag = false;
+
+    const filteredStreamCallback = onStreamChunk
+      ? (chunk: string): void => {
+          for (const ch of chunk) {
+            if (!insideBracketTag) {
+              if (ch === "[") {
+                insideBracketTag = true;
+                streamHoldBuffer = "[";
+              } else {
+                onStreamChunk(ch);
+              }
+            } else {
+              streamHoldBuffer += ch;
+              if (ch === "]") {
+                const isActionTag =
+                  /^\[(OPEN_APP|OPEN_CHROME|OPEN_WEB|SEARCH_YT|SEARCH_WEB)\s*:/i.test(streamHoldBuffer);
+                if (!isActionTag) {
+                  onStreamChunk(streamHoldBuffer);
+                }
+                streamHoldBuffer = "";
+                insideBracketTag = false;
+              } else if (streamHoldBuffer.length > 120) {
+                onStreamChunk(streamHoldBuffer);
+                streamHoldBuffer = "";
+                insideBracketTag = false;
+              }
+            }
+          }
+        }
+      : undefined;
+
+    const rawReply = await this.llmEngine.chat({
       message: input.message,
       history: input.history,
-      sandboxContextSummary,
+      liveContext,
+      ...(filteredStreamCallback ? { onToken: filteredStreamCallback } : {}),
     });
 
+    if (insideBracketTag && streamHoldBuffer.length > 0 && onStreamChunk) {
+      if (!/^\[(OPEN_APP|OPEN_CHROME|OPEN_WEB|SEARCH_YT|SEARCH_WEB)/i.test(streamHoldBuffer)) {
+        onStreamChunk(streamHoldBuffer);
+      }
+    }
+
+    // Jalankan tag aksi desktop [OPEN_...: ...] HANYA jika belum dieksekusi oleh tool di langkah sebelumnya
+    let actionExecuted = alreadyExecutedDesktopAction;
+    if (!alreadyExecutedDesktopAction) {
+      const actionRegex = /\[(OPEN_APP|OPEN_CHROME|OPEN_WEB|SEARCH_YT|SEARCH_WEB)\s*:\s*([^\]]+)\]/gi;
+      let tagMatch: RegExpExecArray | null;
+      while ((tagMatch = actionRegex.exec(rawReply)) !== null) {
+        if (tagMatch[1] && tagMatch[2]) {
+          const ok = await executeAiActionTag({
+            tagType: tagMatch[1],
+            tagValue: tagMatch[2],
+            userPromptLower: lower,
+            sandboxRoot: primarySandbox,
+            quarantineDirName: this.config.quarantineDirName,
+            pathGuard: this.safeExecutor.getPathGuard(),
+          });
+          if (ok) actionExecuted = true;
+        }
+      }
+    }
+
+    let cleanReply = rawReply
+      .replace(/\[(OPEN_APP|OPEN_CHROME|OPEN_WEB|SEARCH_YT|SEARCH_WEB)\s*:\s*[^\]]*\]?/gi, "")
+      .trim();
+
+    if (mustIncludeExactSnippet && !cleanReply.includes(mustIncludeExactSnippet)) {
+      cleanReply = `${cleanReply}\n\`${mustIncludeExactSnippet}\``;
+    }
+
+    if (!actionExecuted) {
+      const fallbackRan = await tryFallbackNaturalDesktopAction({
+        userMessage: input.message,
+        sandboxRoot: primarySandbox,
+        quarantineDirName: this.config.quarantineDirName,
+        pathGuard: this.safeExecutor.getPathGuard(),
+      });
+      if (
+        fallbackRan &&
+        /\b(tidak\s+memiliki\s+akses|tidak\s+bisa\s+membuka|tidak\s+dapat\s+membuka)\b/i.test(cleanReply)
+      ) {
+        cleanReply = "Siap, sudah langsung aku bukakan untukmu!";
+      }
+    }
+
     return {
-      reply,
-      attachment: null,
+      reply: cleanReply || "Siap, sudah langsung dijalankan!",
+      attachment: pendingAttachment,
     };
   }
 
@@ -1345,9 +1638,13 @@ async function runStdioServer(): Promise<void> {
     if (trimmed.length === 0) {
       return;
     }
-    void worker.handleRequest(trimmed).then((response) => {
-      rawStdoutWrite(`${JSON.stringify(response)}\n`);
-    });
+    void worker
+      .handleRequest(trimmed, (reqId, chunk) => {
+        rawStdoutWrite(`${JSON.stringify({ id: reqId, stream: chunk })}\n`);
+      })
+      .then((response) => {
+        rawStdoutWrite(`${JSON.stringify(response)}\n`);
+      });
   });
 }
 

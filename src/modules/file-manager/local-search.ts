@@ -11,6 +11,13 @@ export interface IndexedFileEntry {
   extension: string;
   sizeBytes: number;
   modifiedAt: Date;
+  depth: number;
+}
+
+export interface SandboxOverview {
+  totalIndexedFiles: number;
+  topFolders: string[];
+  topFiles: IndexedFileEntry[];
 }
 
 export interface LocalSearchResult {
@@ -26,6 +33,13 @@ function formatDateIso(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+export function formatHumanBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
 /**
  * Fallback parser deterministik (tanpa AI) untuk kueri sederhana bahasa Indonesia/Inggris.
  */
@@ -33,7 +47,7 @@ export function parseSearchQueryHeuristic(query: string, now: Date = new Date())
   const lower = query.toLowerCase();
 
   // Deteksi ekstensi umum
-  const extMatch = lower.match(/\b(pdf|docx|doc|txt|md|jpg|jpeg|png|mp4|mkv|zip|rar|exe|msi|xlsx|pptx)\b/);
+  const extMatch = lower.match(/\b(pdf|docx|doc|txt|md|jpg|jpeg|png|mp4|mkv|avi|mp3|wav|zip|rar|exe|msi|xlsx|pptx)\b/);
   const extension = extMatch?.[1] ? `.${extMatch[1]}` : null;
 
   // Deteksi rentang waktu sederhana
@@ -67,6 +81,10 @@ export function parseSearchQueryHeuristic(query: string, now: Date = new Date())
     "semua",
     "lihat",
     "tampilkan",
+    "sebutkan",
+    "kasih",
+    "tahu",
+    "tau",
     "sandbox",
     "folder",
     "direktori",
@@ -85,6 +103,19 @@ export function parseSearchQueryHeuristic(query: string, now: Date = new Date())
     "anda",
     "kita",
     "nya",
+    "itu",
+    "ini",
+    "tadi",
+    "tersebut",
+    "salah",
+    "satu",
+    "satunya",
+    "namanya",
+    "nama",
+    "contoh",
+    "contohnya",
+    "misalnya",
+    "mana",
     "dong",
     "tolong",
     "coba",
@@ -101,7 +132,6 @@ export function parseSearchQueryHeuristic(query: string, now: Date = new Date())
     "sekarang",
     "bulan",
     "lalu",
-    "ini",
     "minggu",
     "hari",
     "find",
@@ -132,39 +162,170 @@ export function parseSearchQueryHeuristic(query: string, now: Date = new Date())
   });
 }
 
-async function indexDirectory(
-  rootDir: string,
-  currentDir: string,
-  pathGuard: PathGuard
-): Promise<IndexedFileEntry[]> {
-  const entries = await fs.readdir(currentDir, { withFileTypes: true });
-  const results: IndexedFileEntry[] = [];
+const IGNORED_HEAVY_DIRS = new Set<string>([
+  "node_modules",
+  ".git",
+  "target",
+  "dist",
+  "build",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".cache",
+  "__pycache__",
+  ".venv",
+  "venv",
+  "_ai_karantina",
+]);
 
-  for (const entry of entries) {
-    const fullPath = path.join(currentDir, entry.name);
+const MAX_INDEXED_FILES = 5000;
+const INDEX_CACHE_TTL_MS = 20_000;
+
+interface CachedFileIndex {
+  dirsKey: string;
+  timestampMs: number;
+  entries: IndexedFileEntry[];
+  topFolders: string[];
+}
+
+let cachedFileIndex: CachedFileIndex | null = null;
+
+export function invalidateLocalSearchCache(): void {
+  cachedFileIndex = null;
+}
+
+/**
+ * Penelusuran Breadth-First (BFS) per level kedalaman:
+ * Memastikan 100% file & folder utama di root Desktop (depth 0 & depth 1) selalu terindeks
+ * lebih dulu dan tidak pernah tertelan oleh subfolder dalam (seperti folder recovery ribuan file).
+ */
+async function indexDirectoryBreadthFirst(
+  rootDir: string,
+  pathGuard: PathGuard,
+  collector: IndexedFileEntry[],
+  topFolders: string[]
+): Promise<void> {
+  const queue: Array<{ dirPath: string; depth: number }> = [{ dirPath: rootDir, depth: 0 }];
+  let qIdx = 0;
+
+  while (qIdx < queue.length && collector.length < MAX_INDEXED_FILES) {
+    const current = queue[qIdx++]!;
+    if (current.depth > 5) continue;
+
+    let dirEntries;
     try {
-      await pathGuard.validatePathStrict(fullPath);
+      dirEntries = await fs.readdir(current.dirPath, { withFileTypes: true });
     } catch {
       continue;
     }
 
-    if (entry.isDirectory()) {
-      const nested = await indexDirectory(rootDir, fullPath, pathGuard);
-      results.push(...nested);
-    } else if (entry.isFile()) {
-      const stat = await fs.stat(fullPath);
-      results.push({
-        fullPath,
-        relativePath: path.relative(rootDir, fullPath),
-        fileName: entry.name,
-        extension: path.extname(entry.name).toLowerCase(),
-        sizeBytes: stat.size,
-        modifiedAt: stat.mtime,
-      });
+    for (const entry of dirEntries) {
+      if (collector.length >= MAX_INDEXED_FILES) break;
+      if (entry.isSymbolicLink()) continue;
+
+      const lowerName = entry.name.toLowerCase();
+      if (entry.isDirectory() && (IGNORED_HEAVY_DIRS.has(lowerName) || lowerName.startsWith("."))) {
+        continue;
+      }
+
+      const fullPath = path.join(current.dirPath, entry.name);
+      try {
+        pathGuard.validatePath(fullPath);
+      } catch {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        if (current.depth === 0 && topFolders.length < 40) {
+          topFolders.push(entry.name);
+        }
+        queue.push({ dirPath: fullPath, depth: current.depth + 1 });
+      } else if (entry.isFile()) {
+        if (lowerName === "desktop.ini" || lowerName === "thumbs.db") {
+          continue;
+        }
+        try {
+          const stat = await fs.stat(fullPath);
+          collector.push({
+            fullPath,
+            relativePath: path.relative(rootDir, fullPath),
+            fileName: entry.name,
+            extension: path.extname(entry.name).toLowerCase(),
+            sizeBytes: stat.size,
+            modifiedAt: stat.mtime,
+            depth: current.depth,
+          });
+        } catch {
+          // Abaikan file yang terkunci sementara
+        }
+      }
+    }
+  }
+}
+
+async function ensureIndexCache(
+  allowedDirectories: readonly string[],
+  pathGuard: PathGuard
+): Promise<CachedFileIndex> {
+  const dirsKey = allowedDirectories.join("|").toLowerCase();
+  const nowMs = Date.now();
+  if (
+    cachedFileIndex !== null &&
+    cachedFileIndex.dirsKey === dirsKey &&
+    nowMs - cachedFileIndex.timestampMs < INDEX_CACHE_TTL_MS
+  ) {
+    return cachedFileIndex;
+  }
+
+  const allEntries: IndexedFileEntry[] = [];
+  const topFolders: string[] = [];
+
+  for (const dir of allowedDirectories) {
+    if (allEntries.length >= MAX_INDEXED_FILES) break;
+    try {
+      const validatedDir = await pathGuard.validatePathStrict(dir);
+      await indexDirectoryBreadthFirst(validatedDir, pathGuard, allEntries, topFolders);
+    } catch {
+      // Lewati direktori yang belum ada atau tidak valid
     }
   }
 
-  return results;
+  // Urutkan agar file dokumen nyata (bukan shortcut .lnk) di root Desktop & terbaru selalu tampil paling atas!
+  allEntries.sort((a, b) => {
+    if (a.depth !== b.depth) return a.depth - b.depth;
+    const aIsShortcut = a.extension === ".lnk" || a.extension === ".url" ? 1 : 0;
+    const bIsShortcut = b.extension === ".lnk" || b.extension === ".url" ? 1 : 0;
+    if (aIsShortcut !== bIsShortcut) return aIsShortcut - bIsShortcut;
+    return b.modifiedAt.getTime() - a.modifiedAt.getTime();
+  });
+
+  cachedFileIndex = {
+    dirsKey,
+    timestampMs: nowMs,
+    entries: allEntries,
+    topFolders,
+  };
+  return cachedFileIndex;
+}
+
+export async function getIndexedEntriesCached(
+  allowedDirectories: readonly string[],
+  pathGuard: PathGuard
+): Promise<IndexedFileEntry[]> {
+  const cache = await ensureIndexCache(allowedDirectories, pathGuard);
+  return cache.entries;
+}
+
+export async function getSandboxOverviewCached(
+  allowedDirectories: readonly string[],
+  pathGuard: PathGuard
+): Promise<SandboxOverview> {
+  const cache = await ensureIndexCache(allowedDirectories, pathGuard);
+  return {
+    totalIndexedFiles: cache.entries.length,
+    topFolders: cache.topFolders,
+    topFiles: cache.entries.slice(0, 15),
+  };
 }
 
 export function applySearchFilter(
@@ -245,15 +406,9 @@ const PROMPT_LEAK_STOPWORDS = new Set<string>([
 const TIME_EXPRESSION_REGEX =
   /\b(hari\s+ini|kemarin|minggu|bulan|tahun|today|yesterday|week|month|year|lalu|terakhir|20\d{2}|jan|feb|mar|apr|mei|may|jun|jul|agu|aug|sep|okt|oct|nov|des|dec)\b/i;
 
-/**
- * Guard anti-halusinasi untuk model kecil (Qwen 0.5B):
- * Mencegah kebocoran kata dari system prompt (mis. ".json", "local", "file", tanggal hari ini)
- * masuk ke filter jika pengguna tidak pernah menyebutkannya di kueri.
- */
 export function sanitizeAiSearchFilter(query: string, aiFilter: SearchFilter): SearchFilter {
   const lowerQuery = query.toLowerCase();
 
-  // 1. Validasi extension: hanya pertahankan jika disebut di kueri
   let extension = aiFilter.extension;
   if (extension) {
     const bareExt = extension.replace(/^\./, "").toLowerCase();
@@ -263,7 +418,6 @@ export function sanitizeAiSearchFilter(query: string, aiFilter: SearchFilter): S
     }
   }
 
-  // 2. Validasi keywords: hapus kata bocoran prompt & kata yang tidak ada di kueri pengguna
   const keywords = aiFilter.keywords.filter((kw) => {
     const lowerKw = kw.toLowerCase().trim();
     if (lowerKw.length < 2 || PROMPT_LEAK_STOPWORDS.has(lowerKw)) {
@@ -272,7 +426,6 @@ export function sanitizeAiSearchFilter(query: string, aiFilter: SearchFilter): S
     return lowerQuery.includes(lowerKw);
   });
 
-  // 3. Validasi dateRange: hanya pertahankan jika kueri mengandung ekspresi waktu
   const hasTimeHint = TIME_EXPRESSION_REGEX.test(lowerQuery);
   const dateRange = hasTimeHint ? aiFilter.dateRange : { from: null, to: null };
 
@@ -283,11 +436,6 @@ export function sanitizeAiSearchFilter(query: string, aiFilter: SearchFilter): S
   });
 }
 
-/**
- * Natural Language Local Search:
- * Menerjemahkan kueri santai ke SearchFilter JSON (pakai AI atau fallback heuristik)
- * lalu mencari file di indeks lokal sandbox.
- */
 export async function runLocalNaturalSearch(options: {
   query: string;
   allowedDirectories: readonly string[];
@@ -311,17 +459,7 @@ export async function runLocalNaturalSearch(options: {
     filter = parseSearchQueryHeuristic(options.query, now);
   }
 
-  const allEntries: IndexedFileEntry[] = [];
-  for (const dir of options.allowedDirectories) {
-    try {
-      const validatedDir = await options.pathGuard.validatePathStrict(dir);
-      const indexed = await indexDirectory(validatedDir, validatedDir, options.pathGuard);
-      allEntries.push(...indexed);
-    } catch {
-      // Lewati direktori yang belum ada atau tidak valid
-    }
-  }
-
+  const allEntries = await getIndexedEntriesCached(options.allowedDirectories, options.pathGuard);
   const matches = applySearchFilter(allEntries, filter);
   return { filter, usedAi, matches };
 }

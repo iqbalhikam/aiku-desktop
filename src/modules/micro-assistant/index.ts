@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
 import type { LlmInferenceClient } from "../../core/llm/llama-engine.js";
@@ -72,7 +73,8 @@ export async function runQuickTldr(
   const summary = await llmClient.chat({
     message: prompt,
     history: [],
-    sandboxContextSummary: "Mode Quick TL;DR (ringkas teks).",
+    sandboxContextSummary: "Kamu adalah asisten peringkas teks cepat berbahasa Indonesia.",
+    stateless: true,
   });
 
   return { summary, wordCount, truncated };
@@ -428,28 +430,45 @@ export function convertUnitExpression(rawText: string): string | null {
 }
 
 /**
- * Memetakan kalimat natural user ke daftar Safe Preset Command yang di-hardcode.
+ * Memetakan kalimat perintah langsung sederhana ke daftar Safe Preset Command yang di-hardcode.
+ * Jika kalimat meminta membuka website tertentu di browser (mis. "membuka youtube di chrome"),
+ * kembalikan null agar ditangani secara cerdas oleh Qwen 1.5B Agentic Action + Web Launcher!
  */
 export function matchSafePresetCommand(userText: string): SafePresetCommand | null {
-  const lower = userText.toLowerCase();
+  const lower = userText.toLowerCase().trim();
 
-  if (/\b(buka|open|jalankan|jalanin|tampilkan)\b/.test(lower)) {
+  // Jika user menyebut nama situs/pencarian di dalam browser (mis. "youtube di chrome", "github di browser"),
+  // biarkan masuk ke Agentic AI + Browser URL Launcher agar membuka URL spesifiknya di Chrome!
+  if (
+    /\b(di\s+chrome|di\s+browser|di\s+edge|di\s+google|di\s+youtube|\.com|\.id|\.io|\.org|github|gmail|chatgpt|notion|figma|canva)\b/.test(
+      lower
+    )
+  ) {
+    return null;
+  }
+
+  // Jangan bajak kalimat tanya kemampuan seperti "apakah kamu bisa..." -> biarkan AI menjawab & mengeksekusi!
+  if (/^(apakah|apa\s+kamu|kamu\s+bisa|bisa\s+nggak|bisakah)\b/.test(lower)) {
+    return null;
+  }
+
+  if (/\b(buka|membuka|bukain|bukakan|open|jalankan|menjalankan|jalanin|nyalakan|nyalain|tampilkan)\b/.test(lower)) {
     if (/\b(karantina|quarantine)\b/.test(lower)) return "OPEN_QUARANTINE";
     if (/\b(sandbox|folder\s+sandbox)\b/.test(lower)) return "OPEN_SANDBOX";
     if (/\b(notepad|catatan\s+windows)\b/.test(lower)) return "OPEN_NOTEPAD";
     if (/\b(kalkulator|calculator|calc)\b/.test(lower)) return "OPEN_CALCULATOR";
-    if (/\b(chrome|google\s+chrome)\b/.test(lower)) return "OPEN_CHROME";
-    if (/\b(edge|browser)\b/.test(lower)) return "OPEN_EDGE";
+    if (/\b(youtube|yt)\b/.test(lower)) return "OPEN_YOUTUBE";
     if (/\b(vs\s*code|vscode|visual\s+studio\s+code)\b/.test(lower)) return "OPEN_VSCODE";
     if (/\b(spotify)\b/.test(lower)) return "OPEN_SPOTIFY";
-    if (/\b(youtube|yt)\b/.test(lower)) return "OPEN_YOUTUBE";
     if (/\b(whatsapp|wa)\b/.test(lower)) return "OPEN_WHATSAPP";
     if (/\b(task\s*manager)\b/.test(lower)) return "OPEN_TASK_MANAGER";
     if (/\b(paint|mspaint)\b/.test(lower)) return "OPEN_PAINT";
     if (/\b(pengaturan\s+windows|windows\s+settings|setting\s+windows)\b/.test(lower)) {
       return "OPEN_WINDOWS_SETTINGS";
     }
-    if (/\b(explorer|file\s+explorer|folder)\b/.test(lower)) return "OPEN_EXPLORER";
+    if (/\b(chrome|google\s+chrome)\b/.test(lower)) return "OPEN_CHROME";
+    if (/\b(edge|browser)\b/.test(lower)) return "OPEN_EDGE";
+    if (/\b(explorer|file\s+explorer)\b/.test(lower)) return "OPEN_EXPLORER";
   }
 
   if (/\b(ukuran|storage|kapasitas|statistik|ringkasan\s+folder|berapa\s+mb)\b/.test(lower)) {
@@ -592,19 +611,126 @@ export async function executeSafePresetCommand(options: {
 
 const BrowserTargetInputSchema = z.string().trim().min(1).max(300);
 
+const KNOWN_SITE_SHORTCUTS: Readonly<Record<string, string>> = {
+  youtube: "https://www.youtube.com",
+  yt: "https://www.youtube.com",
+  google: "https://www.google.com",
+  gmail: "https://mail.google.com",
+  github: "https://github.com",
+  chatgpt: "https://chatgpt.com",
+  gemini: "https://gemini.google.com",
+  whatsapp: "https://web.whatsapp.com",
+  instagram: "https://www.instagram.com",
+  ig: "https://www.instagram.com",
+  x: "https://x.com",
+  twitter: "https://x.com",
+  tiktok: "https://www.tiktok.com",
+  netflix: "https://www.netflix.com",
+  linkedin: "https://www.linkedin.com",
+  tokopedia: "https://www.tokopedia.com",
+  shopee: "https://shopee.co.id",
+  notion: "https://www.notion.so",
+  figma: "https://www.figma.com",
+  canva: "https://www.canva.com",
+};
+
+let cachedChromeExePath: string | null | undefined = undefined;
+
+async function resolveChromeExecutable(): Promise<string | null> {
+  if (cachedChromeExePath !== undefined) {
+    return cachedChromeExePath;
+  }
+  const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
+  const candidates = [
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    path.join(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      cachedChromeExePath = candidate;
+      return candidate;
+    } catch {
+      // Lanjut cek lokasi berikutnya
+    }
+  }
+  cachedChromeExePath = null;
+  return null;
+}
+
 /**
- * Membuka URL HTTPS/HTTP atau kueri pencarian Google di browser bawaan Windows
- * melalui rundll32 url.dll,FileProtocolHandler (tanpa cmd.exe -> zero shell injection).
+ * Membuka URL HTTPS/HTTP atau kueri pencarian Google/YouTube secara aman (tanpa cmd.exe -> zero shell injection).
+ * Jika preferChrome = true dan Google Chrome terpasang, langsung membuka URL di dalam Google Chrome!
+ */
+export async function openSafeUrlOrSearch(
+  rawQueryOrUrl: string,
+  options: { preferChrome?: boolean; youtubeSearch?: boolean } = {}
+): Promise<{ url: string; message: string }> {
+  const cleaned = BrowserTargetInputSchema.parse(rawQueryOrUrl);
+  const lowerClean = cleaned.toLowerCase();
+  let targetUrl: string;
+
+  if (options.youtubeSearch) {
+    targetUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleaned)}`;
+  } else if (KNOWN_SITE_SHORTCUTS[lowerClean]) {
+    targetUrl = KNOWN_SITE_SHORTCUTS[lowerClean]!;
+  } else {
+    const looksLikeDomain =
+      /^https?:\/\//i.test(cleaned) ||
+      (/^[a-z0-9-]+(\.[a-z0-9-]+)+(\/.*)?$/i.test(cleaned) && !cleaned.includes(" "));
+
+    if (looksLikeDomain) {
+      const withProto = /^https?:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`;
+      const parsed = new URL(withProto);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+        throw new Error("Hanya protokol HTTP/HTTPS yang diizinkan.");
+      }
+      targetUrl = parsed.toString();
+    } else {
+      targetUrl = `https://www.google.com/search?q=${encodeURIComponent(cleaned)}`;
+    }
+  }
+
+  if (process.platform === "win32") {
+    const chromeExe = options.preferChrome ? await resolveChromeExecutable() : null;
+    if (chromeExe) {
+      const child = spawn(chromeExe, [targetUrl], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      child.unref();
+    } else {
+      const child = spawn("rundll32.exe", ["url.dll,FileProtocolHandler", targetUrl], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      child.unref();
+    }
+  }
+
+  return {
+    url: targetUrl,
+    message: `Membuka ${options.preferChrome ? "di Chrome" : "di browser"}: ${targetUrl}`,
+  };
+}
+
+/**
+ * Wrapper sinkron kompatibel untuk RPC openBrowserSearch.
  */
 export function openSafeBrowserTarget(rawQueryOrUrl: string): { url: string; message: string } {
   const cleaned = BrowserTargetInputSchema.parse(rawQueryOrUrl);
+  const lowerClean = cleaned.toLowerCase();
   let targetUrl: string;
 
-  const looksLikeDomain =
+  if (KNOWN_SITE_SHORTCUTS[lowerClean]) {
+    targetUrl = KNOWN_SITE_SHORTCUTS[lowerClean]!;
+  } else if (
     /^https?:\/\//i.test(cleaned) ||
-    (/^[a-z0-9-]+(\.[a-z0-9-]+)+(\/.*)?$/i.test(cleaned) && !cleaned.includes(" "));
-
-  if (looksLikeDomain) {
+    (/^[a-z0-9-]+(\.[a-z0-9-]+)+(\/.*)?$/i.test(cleaned) && !cleaned.includes(" "))
+  ) {
     const withProto = /^https?:\/\//i.test(cleaned) ? cleaned : `https://${cleaned}`;
     const parsed = new URL(withProto);
     if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
@@ -628,4 +754,150 @@ export function openSafeBrowserTarget(rawQueryOrUrl: string): { url: string; mes
     url: targetUrl,
     message: `Membuka di browser: ${targetUrl}`,
   };
+}
+
+const APP_TAG_MAP: Readonly<Record<string, SafePresetCommand>> = {
+  chrome: "OPEN_CHROME",
+  "google chrome": "OPEN_CHROME",
+  edge: "OPEN_EDGE",
+  vscode: "OPEN_VSCODE",
+  "vs code": "OPEN_VSCODE",
+  code: "OPEN_VSCODE",
+  spotify: "OPEN_SPOTIFY",
+  notepad: "OPEN_NOTEPAD",
+  calculator: "OPEN_CALCULATOR",
+  kalkulator: "OPEN_CALCULATOR",
+  calc: "OPEN_CALCULATOR",
+  whatsapp: "OPEN_WHATSAPP",
+  wa: "OPEN_WHATSAPP",
+  youtube: "OPEN_YOUTUBE",
+  explorer: "OPEN_EXPLORER",
+  "file explorer": "OPEN_EXPLORER",
+  settings: "OPEN_WINDOWS_SETTINGS",
+  "windows settings": "OPEN_WINDOWS_SETTINGS",
+  taskmgr: "OPEN_TASK_MANAGER",
+  "task manager": "OPEN_TASK_MANAGER",
+  paint: "OPEN_PAINT",
+  sandbox: "OPEN_SANDBOX",
+};
+
+/**
+ * Mengeksekusi tag aksi terstruktur dari model AI lokal secara aman melalui whitelist Zod + PathGuard.
+ */
+export async function executeAiActionTag(options: {
+  tagType: string;
+  tagValue: string;
+  userPromptLower: string;
+  sandboxRoot: string;
+  quarantineDirName: string;
+  pathGuard: PathGuard;
+}): Promise<boolean> {
+  const kind = options.tagType.trim().toUpperCase();
+  const val = options.tagValue.trim();
+  if (!val) return false;
+
+  const preferChrome = /\bchrome\b/.test(options.userPromptLower) || kind === "OPEN_CHROME";
+
+  if (kind === "OPEN_APP") {
+    const mapped = APP_TAG_MAP[val.toLowerCase()];
+    if (mapped) {
+      await executeSafePresetCommand({
+        command: mapped,
+        sandboxRoot: options.sandboxRoot,
+        quarantineDirName: options.quarantineDirName,
+        pathGuard: options.pathGuard,
+      });
+      return true;
+    }
+    // Jika model menulis nama situs di dalam OPEN_APP (mis. [OPEN_APP: youtube]), buka situsnya!
+    if (KNOWN_SITE_SHORTCUTS[val.toLowerCase()]) {
+      await openSafeUrlOrSearch(val, { preferChrome });
+      return true;
+    }
+    return false;
+  }
+
+  if (kind === "OPEN_WEB" || kind === "OPEN_CHROME") {
+    await openSafeUrlOrSearch(val, { preferChrome });
+    return true;
+  }
+
+  if (kind === "SEARCH_YT") {
+    await openSafeUrlOrSearch(val, { preferChrome, youtubeSearch: true });
+    return true;
+  }
+
+  if (kind === "SEARCH_WEB") {
+    await openSafeUrlOrSearch(val, { preferChrome });
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Fallback cerdas pendeteksi niat buka web/aplikasi dari kalimat natural pengguna
+ * (mis. "kamu bisa membuka youtube di chrome", "tolong bukain github di browser", "cari lagu lofi di youtube")
+ * jika model 1.5B menjawab mengiyakan namun lupa menyertakan tag kurung siku.
+ */
+export async function tryFallbackNaturalDesktopAction(options: {
+  userMessage: string;
+  sandboxRoot: string;
+  quarantineDirName: string;
+  pathGuard: PathGuard;
+}): Promise<boolean> {
+  const lower = options.userMessage.toLowerCase().trim();
+  const hasOpenOrSearchVerb =
+    /\b(buka|membuka|bukain|bukakan|open|jalankan|menjalankan|jalanin|nyalakan|nyalain|cari|carikan|putar|putarkan|stel)\b/.test(
+      lower
+    );
+  if (!hasOpenOrSearchVerb) {
+    return false;
+  }
+
+  const preferChrome = /\bchrome\b/.test(lower);
+
+  // 1. Cari video/lagu di YouTube (mis. "cari tutorial rust di youtube" / "putar lofi di youtube")
+  const ytSearchMatch = lower.match(
+    /\b(?:cari|carikan|putar|putarkan|stel|buka|membuka)\s+(.+?)\s+di\s+(?:youtube|yt)\b/
+  );
+  if (ytSearchMatch?.[1] && !/^(youtube|yt|aplikasi|web|situs)$/.test(ytSearchMatch[1].trim())) {
+    await openSafeUrlOrSearch(ytSearchMatch[1].trim(), { preferChrome, youtubeSearch: true });
+    return true;
+  }
+
+  // 2. Buka situs populer (mis. "kamu bisa membuka youtube di chrome", "bukain github", "buka chatgpt di chrome")
+  for (const [siteKey, siteUrl] of Object.entries(KNOWN_SITE_SHORTCUTS)) {
+    if (siteKey.length <= 2 && siteKey !== "yt" && siteKey !== "ig") continue;
+    const re = new RegExp(`\\b${siteKey}\\b`, "i");
+    if (re.test(lower)) {
+      // Hindari salah tangkap jika hanya bilang "buka chrome" (tanpa situs lain)
+      await openSafeUrlOrSearch(siteUrl, { preferChrome });
+      return true;
+    }
+  }
+
+  // 3. Buka domain eksplisit (mis. "buka kampus.ac.id di chrome")
+  const domainMatch = lower.match(/\b([a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[^\s]*)?)\b/);
+  if (domainMatch?.[1]) {
+    await openSafeUrlOrSearch(domainMatch[1], { preferChrome });
+    return true;
+  }
+
+  // 4. Buka aplikasi desktop (mis. "kamu bisa membuka vscode", "tolong bukain kalkulator")
+  for (const [appKey, presetCmd] of Object.entries(APP_TAG_MAP)) {
+    if (appKey.length <= 2 && appKey !== "wa") continue;
+    const escaped = appKey.replace(/\s+/g, "\\s+");
+    if (new RegExp(`\\b${escaped}\\b`, "i").test(lower)) {
+      await executeSafePresetCommand({
+        command: presetCmd,
+        sandboxRoot: options.sandboxRoot,
+        quarantineDirName: options.quarantineDirName,
+        pathGuard: options.pathGuard,
+      });
+      return true;
+    }
+  }
+
+  return false;
 }

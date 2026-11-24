@@ -472,6 +472,7 @@ function clearChatConversation() {
   chatHistory.length = 0;
   const stream = document.getElementById("palette-chat-stream");
   if (stream) stream.innerHTML = "";
+  void rpc("resetChat").catch(() => {});
   updateWelcomeCard();
   syncWelcomeVisibility();
   document.getElementById("palette-input")?.focus();
@@ -649,20 +650,35 @@ function applyChatStyle(style) {
   }
 }
 
-function speakText(text, onEnd) {
-  if (!("speechSynthesis" in window)) {
-    if (onEnd) onEnd();
-    return;
+let activeOfflineAudio = null;
+let voiceSetupPollTimer = null;
+let voiceRecorder = null;
+let voiceRecordStream = null;
+let voiceRecordChunks = [];
+let voiceRecordCountdownTimer = null;
+let voiceRecordSecLeft = 0;
+
+function stopActiveSpeech() {
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
   }
-  window.speechSynthesis.cancel();
-  const clean = text.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").trim();
-  if (!clean) {
+  if (activeOfflineAudio) {
+    try {
+      activeOfflineAudio.pause();
+      activeOfflineAudio.src = "";
+    } catch {}
+    activeOfflineAudio = null;
+  }
+}
+
+function speakWithWebSpeech(clean, speed, onEnd) {
+  if (!("speechSynthesis" in window)) {
     if (onEnd) onEnd();
     return;
   }
   const utterance = new SpeechSynthesisUtterance(clean);
   utterance.lang = "id-ID";
-  utterance.rate = 1.06;
+  utterance.rate = Number.isFinite(speed) ? speed : 1.05;
   const voices = window.speechSynthesis.getVoices();
   const idVoice = voices.find((v) => v.lang.toLowerCase().startsWith("id"));
   if (idVoice) utterance.voice = idVoice;
@@ -675,6 +691,385 @@ function speakText(text, onEnd) {
   window.speechSynthesis.speak(utterance);
 }
 
+function speakText(text, onEnd, overrideOptions = null) {
+  stopActiveSpeech();
+  const clean = text.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").trim();
+  if (!clean) {
+    if (onEnd) onEnd();
+    return;
+  }
+
+  const vStatus = latestStatusCache?.voiceStatus;
+  const mode = overrideOptions?.mode || vStatus?.ttsMode || "system";
+  const speed = Number(overrideOptions?.speed || vStatus?.speed || 1.05);
+  const profileId = overrideOptions?.profileId ?? vStatus?.activeProfileId ?? undefined;
+
+  if ((mode === "clone" || mode === "piper") && vStatus?.piperReady) {
+    void (async () => {
+      try {
+        const res = await rpc("synthesizeSpeech", {
+          text: clean,
+          mode,
+          speed,
+          ...(profileId ? { profileId } : {}),
+        });
+        if (!res?.wavBase64) {
+          speakWithWebSpeech(clean, speed, onEnd);
+          return;
+        }
+        const audio = new Audio(`data:audio/wav;base64,${res.wavBase64}`);
+        activeOfflineAudio = audio;
+        audio.onended = () => {
+          if (activeOfflineAudio === audio) activeOfflineAudio = null;
+          if (onEnd) onEnd();
+        };
+        audio.onerror = () => {
+          if (activeOfflineAudio === audio) activeOfflineAudio = null;
+          speakWithWebSpeech(clean, speed, onEnd);
+        };
+        await audio.play();
+      } catch {
+        speakWithWebSpeech(clean, speed, onEnd);
+      }
+    })();
+    return;
+  }
+
+  speakWithWebSpeech(clean, speed, onEnd);
+}
+
+function uint8ArrayToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const sub = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, sub);
+  }
+  return btoa(binary);
+}
+
+async function decodeBlobOrArrayBufferToWavBase64(arrayBuffer) {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) {
+    return uint8ArrayToBase64(new Uint8Array(arrayBuffer));
+  }
+
+  const ctx = new AudioCtx();
+  try {
+    const decoded = await ctx.decodeAudioData(arrayBuffer.slice(0));
+    const channels = decoded.numberOfChannels;
+    const srcLen = decoded.length;
+    const srcRate = decoded.sampleRate;
+    const mono = new Float32Array(srcLen);
+
+    for (let ch = 0; ch < channels; ch++) {
+      const chData = decoded.getChannelData(ch);
+      for (let i = 0; i < srcLen; i++) {
+        mono[i] += chData[i] / channels;
+      }
+    }
+
+    const targetRate = 22050;
+    const ratio = srcRate / targetRate;
+    // Ambil maksimal 20 detik pertama agar payload RPC ringan (~1.1 MB) & ekstraksi instan
+    const outLen = Math.min(targetRate * 20, Math.max(1, Math.round(srcLen / ratio)));
+    const resampled = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const pos = i * ratio;
+      const idx = Math.floor(pos);
+      const frac = pos - idx;
+      const s0 = mono[Math.min(srcLen - 1, idx)] || 0;
+      const s1 = mono[Math.min(srcLen - 1, idx + 1)] || 0;
+      resampled[i] = s0 + (s1 - s0) * frac;
+    }
+
+    const wavBytes = new ArrayBuffer(44 + outLen * 2);
+    const view = new DataView(wavBytes);
+    const writeAscii = (off, str) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
+    };
+
+    writeAscii(0, "RIFF");
+    view.setUint32(4, 36 + outLen * 2, true);
+    writeAscii(8, "WAVE");
+    writeAscii(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // Mono
+    view.setUint32(24, targetRate, true);
+    view.setUint32(28, targetRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeAscii(36, "data");
+    view.setUint32(40, outLen * 2, true);
+
+    for (let i = 0; i < outLen; i++) {
+      const clamped = Math.max(-1, Math.min(1, resampled[i]));
+      const int16 = clamped < 0 ? Math.round(clamped * 32768) : Math.round(clamped * 32767);
+      view.setInt16(44 + i * 2, int16, true);
+    }
+
+    return uint8ArrayToBase64(new Uint8Array(wavBytes));
+  } finally {
+    void ctx.close().catch(() => {});
+  }
+}
+
+function populateVoiceStudio(vStatus) {
+  if (!vStatus) return;
+  const dot = document.getElementById("voice-engine-dot");
+  const sub = document.getElementById("voice-engine-sub");
+  const setupBtn = document.getElementById("btn-voice-setup");
+  const modeSel = document.getElementById("voice-tts-mode");
+  const profSel = document.getElementById("voice-profile-select");
+  const delBtn = document.getElementById("btn-voice-del-profile");
+  const speedSel = document.getElementById("voice-speed");
+  const foot = document.getElementById("voice-status-footnote");
+
+  if (dot) {
+    dot.className = vStatus.fullyReady ? "status-dot dot-emerald" : "status-dot dot-muted";
+  }
+  if (sub) {
+    if (vStatus.fullyReady) {
+      sub.textContent = `Siap 100% Offline • ${vStatus.profiles?.length || 0} profil suara tersimpan`;
+    } else if (vStatus.piperReady) {
+      sub.textContent = "Piper siap • OpenVoice ONNX belum lengkap";
+    } else {
+      sub.textContent = "Belum terpasang • ~198 MB • 100% Lokal di CPU";
+    }
+  }
+  if (setupBtn) {
+    if (vStatus.activeSetup?.status === "downloading" || vStatus.activeSetup?.status === "extracting") {
+      setupBtn.disabled = true;
+      setupBtn.textContent = `Unduh ${Math.round(vStatus.activeSetup.percent || 0)}%`;
+      startVoiceSetupPolling();
+    } else if (vStatus.fullyReady) {
+      setupBtn.disabled = true;
+      setupBtn.textContent = "Siap Offline";
+    } else {
+      setupBtn.disabled = false;
+      setupBtn.textContent = "Unduh Mesin Suara";
+    }
+  }
+
+  if (modeSel) {
+    modeSel.value = vStatus.ttsMode || "system";
+  }
+  if (speedSel && vStatus.speed) {
+    speedSel.value = String(vStatus.speed);
+  }
+  if (profSel) {
+    const profiles = Array.isArray(vStatus.profiles) ? vStatus.profiles : [];
+    if (profiles.length === 0) {
+      profSel.innerHTML = `<option value="">Belum ada sampel suara (rekam/upload)</option>`;
+      if (delBtn) delBtn.disabled = true;
+    } else {
+      profSel.innerHTML = profiles
+        .map(
+          (p) =>
+            `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)} (${Number(p.durationSec).toFixed(1)}s)</option>`
+        )
+        .join("");
+      if (vStatus.activeProfileId && profiles.some((p) => p.id === vStatus.activeProfileId)) {
+        profSel.value = vStatus.activeProfileId;
+      }
+      if (delBtn) delBtn.disabled = false;
+    }
+  }
+  if (foot) {
+    const activeModeLabel =
+      vStatus.ttsMode === "clone"
+        ? "Mode aktif: Custom Voice Clone Offline"
+        : vStatus.ttsMode === "piper"
+          ? "Mode aktif: Piper Bahasa Indonesia Offline"
+          : "Mode aktif: Suara Sistem Windows";
+    foot.textContent = `${activeModeLabel} • 100% lokal`;
+  }
+}
+
+function startVoiceSetupPolling() {
+  if (voiceSetupPollTimer) return;
+  const wrap = document.getElementById("voice-dl-wrap");
+  const stageEl = document.getElementById("voice-dl-stage");
+  const statsEl = document.getElementById("voice-dl-stats");
+  const fillEl = document.getElementById("voice-dl-fill");
+  const idleLabel = document.getElementById("idle-label");
+  wrap?.classList.remove("hidden");
+
+  voiceSetupPollTimer = setInterval(async () => {
+    try {
+      const vStatus = await rpc("getVoiceStatus");
+      if (latestStatusCache) {
+        latestStatusCache.voiceStatus = vStatus;
+      }
+      const prog = vStatus.activeSetup;
+      if (!prog) {
+        clearInterval(voiceSetupPollTimer);
+        voiceSetupPollTimer = null;
+        wrap?.classList.add("hidden");
+        populateVoiceStudio(vStatus);
+        if (idleLabel && timerRemainingSec === 0) idleLabel.textContent = "AI Ready";
+        return;
+      }
+
+      if (prog.status === "downloading" || prog.status === "extracting") {
+        const mb = (prog.downloadedBytes / (1024 * 1024)).toFixed(1);
+        const totalMb = prog.totalBytes ? (prog.totalBytes / (1024 * 1024)).toFixed(0) : "198";
+        const pct = prog.percent ?? 0;
+        if (stageEl) stageEl.textContent = prog.stage || "Mengunduh...";
+        if (statsEl) statsEl.textContent = `${mb} / ${totalMb} MB (${pct.toFixed(0)}%)`;
+        if (fillEl) fillEl.style.width = `${Math.max(4, pct)}%`;
+        if (idleLabel && timerRemainingSec === 0) idleLabel.textContent = `Voice ${Math.round(pct)}%`;
+      } else if (prog.status === "done") {
+        if (fillEl) fillEl.style.width = "100%";
+        if (statsEl) statsEl.textContent = "100% • Siap";
+        clearInterval(voiceSetupPollTimer);
+        voiceSetupPollTimer = null;
+        setTimeout(() => wrap?.classList.add("hidden"), 1800);
+        if (idleLabel && timerRemainingSec === 0) idleLabel.textContent = "AI Ready";
+        populateVoiceStudio(vStatus);
+        showIslandNotification(
+          "Mesin Suara Offline Siap",
+          "Piper ID + OpenVoice ONNX berhasil dipasang",
+          "ok",
+          true
+        );
+      } else if (prog.status === "error") {
+        clearInterval(voiceSetupPollTimer);
+        voiceSetupPollTimer = null;
+        wrap?.classList.add("hidden");
+        if (idleLabel && timerRemainingSec === 0) idleLabel.textContent = "AI Ready";
+        populateVoiceStudio(vStatus);
+        showToast(`Gagal mengunduh mesin suara: ${prog.error || "Network error"}`, "err");
+      }
+      trackHitBoxForMs(200);
+    } catch {}
+  }, 1200);
+}
+
+async function submitVoiceSampleArrayBuffer(arrayBuffer) {
+  const nameInput = document.getElementById("voice-new-name");
+  const recBtn = document.getElementById("btn-voice-record");
+  const recLabel = document.getElementById("btn-voice-record-label");
+  const upBtn = document.getElementById("btn-voice-upload");
+  const profileName = nameInput?.value.trim() || "Suara Saya";
+
+  if (recBtn) recBtn.disabled = true;
+  if (upBtn) upBtn.disabled = true;
+  if (recLabel) recLabel.textContent = "Mengekstrak...";
+
+  try {
+    const wavBase64 = await decodeBlobOrArrayBufferToWavBase64(arrayBuffer);
+    const res = await rpc("saveVoiceSample", {
+      name: profileName,
+      wavBase64,
+    });
+    if (latestStatusCache && res.voiceStatus) {
+      latestStatusCache.voiceStatus = res.voiceStatus;
+    }
+    populateVoiceStudio(res.voiceStatus);
+    showIslandNotification(
+      "Voice Clone Tersimpan",
+      `${res.profile.name} (${res.profile.durationSec}s) • Aktif 100% Offline`,
+      "ok",
+      true
+    );
+  } catch (err) {
+    showToast(`Gagal memproses sampel suara: ${err}`, "err");
+  } finally {
+    if (recBtn) {
+      recBtn.disabled = false;
+      recBtn.classList.remove("recording");
+    }
+    if (upBtn) upBtn.disabled = false;
+    if (recLabel) recLabel.textContent = "Rekam 10s";
+  }
+}
+
+function stopVoiceSampleRecording() {
+  if (voiceRecordCountdownTimer) {
+    clearInterval(voiceRecordCountdownTimer);
+    voiceRecordCountdownTimer = null;
+  }
+  if (voiceRecorder && voiceRecorder.state !== "inactive") {
+    try {
+      voiceRecorder.stop();
+    } catch {}
+  }
+}
+
+async function toggleVoiceSampleRecording() {
+  const vStatus = latestStatusCache?.voiceStatus;
+  if (!vStatus?.openVoiceReady) {
+    showToast("Klik 'Unduh Mesin Suara' terlebih dahulu sebelum merekam sampel clone.", "err");
+    return;
+  }
+
+  if (voiceRecorder && voiceRecorder.state === "recording") {
+    stopVoiceSampleRecording();
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showToast("Akses mikrofon tidak didukung di lingkungan ini. Gunakan tombol Upload Audio.", "err");
+    return;
+  }
+
+  const recBtn = document.getElementById("btn-voice-record");
+  const recLabel = document.getElementById("btn-voice-record-label");
+
+  try {
+    voiceRecordStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    voiceRecordChunks = [];
+    voiceRecorder = new MediaRecorder(voiceRecordStream);
+
+    voiceRecorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) {
+        voiceRecordChunks.push(ev.data);
+      }
+    };
+
+    voiceRecorder.onstop = async () => {
+      if (voiceRecordStream) {
+        voiceRecordStream.getTracks().forEach((t) => t.stop());
+        voiceRecordStream = null;
+      }
+      const blob = new Blob(voiceRecordChunks, { type: voiceRecorder?.mimeType || "audio/webm" });
+      voiceRecorder = null;
+      if (blob.size < 1024) {
+        if (recBtn) recBtn.classList.remove("recording");
+        if (recLabel) recLabel.textContent = "Rekam 10s";
+        showToast("Rekaman kosong atau terlalu singkat.", "err");
+        return;
+      }
+      const buf = await blob.arrayBuffer();
+      await submitVoiceSampleArrayBuffer(buf);
+    };
+
+    voiceRecordSecLeft = 10;
+    recBtn?.classList.add("recording");
+    if (recLabel) recLabel.textContent = `Selesai (${voiceRecordSecLeft}s)`;
+    voiceRecorder.start();
+
+    voiceRecordCountdownTimer = setInterval(() => {
+      voiceRecordSecLeft -= 1;
+      if (voiceRecordSecLeft <= 0) {
+        stopVoiceSampleRecording();
+      } else if (recLabel) {
+        recLabel.textContent = `Selesai (${voiceRecordSecLeft}s)`;
+      }
+    }, 1000);
+  } catch (err) {
+    showToast(`Mikrofon ditolak atau gagal dibuka: ${err}`, "err");
+  }
+}
+
 function stopLiveVoice(returnToPalette = true) {
   liveVoiceActive = false;
   if (activeRecognition) {
@@ -684,9 +1079,7 @@ function stopLiveVoice(returnToPalette = true) {
     } catch {}
     activeRecognition = null;
   }
-  if ("speechSynthesis" in window) {
-    window.speechSynthesis.cancel();
-  }
+  stopActiveSpeech();
   document.querySelector(".ai-orb")?.classList.remove("speaking");
   if (returnToPalette) {
     setIslandState("palette");
@@ -961,6 +1354,65 @@ function showToast(message, type = "ok", subtitle = "", forceFase2 = false) {
   showIslandNotification(message, subtitle, type, forceFase2);
 }
 
+let activeChunkHandler = null;
+
+async function rpcStream(method, params = {}, onChunk = null) {
+  if (typeof invoke === "function") {
+    activeChunkHandler = onChunk;
+    try {
+      return await invoke("rpc_call", { method, params });
+    } finally {
+      activeChunkHandler = null;
+    }
+  }
+
+  const res = await fetch("/api/rpc-stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-AiKu-Token": getSessionToken(),
+    },
+    body: JSON.stringify({ id: rpcCounter++, method, params }),
+  });
+
+  if (!res.ok || !res.body) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalPayload = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newlineIdx;
+    while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+      const line = buffer.slice(0, newlineIdx).trim();
+      buffer = buffer.slice(newlineIdx + 1);
+      if (!line) continue;
+      const obj = JSON.parse(line);
+      if (typeof obj.stream === "string") {
+        onChunk?.(obj.stream);
+      } else if ("ok" in obj) {
+        finalPayload = obj;
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    const obj = JSON.parse(buffer.trim());
+    if ("ok" in obj) finalPayload = obj;
+  }
+
+  if (!finalPayload || !finalPayload.ok) {
+    throw new Error(finalPayload?.error || "Stream RPC gagal.");
+  }
+  return finalPayload.result;
+}
+
 async function rpc(method, params = {}) {
   if (typeof invoke === "function") {
     return invoke("rpc_call", { method, params });
@@ -982,10 +1434,7 @@ async function rpc(method, params = {}) {
 
 async function refreshStatus() {
   try {
-    const [status, filesRes] = await Promise.all([
-      rpc("getStatus"),
-      rpc("search", { query: "semua file", useAi: false }),
-    ]);
+    const status = await rpc("getStatus");
 
     latestStatusCache = status;
     currentSandboxRoot = status.primarySandbox;
@@ -995,7 +1444,7 @@ async function refreshStatus() {
     if (typeof status.hotkey === "string" && typeof invoke === "function") {
       void invoke("set_global_hotkey", { hotkey: status.hotkey }).catch(() => {});
     }
-    const count = filesRes.matches?.length ?? 0;
+    const count = typeof status.fileCount === "number" ? status.fileCount : 0;
 
     if (lastKnownFileCount !== null && count !== lastKnownFileCount) {
       const diff = count - lastKnownFileCount;
@@ -1231,6 +1680,15 @@ function appendPaletteMessage(role, text, files = null, animate = false) {
     div.appendChild(bodyEl);
   }
 
+  const formatFileSizeBytes = (b) => {
+    const num = Number(b) || 0;
+    if (num <= 0) return "Cloud";
+    if (num >= 1024 * 1024 * 1024) return `${(num / 1024 ** 3).toFixed(2)} GB`;
+    if (num >= 1024 * 1024) return `${(num / 1024 ** 2).toFixed(1)} MB`;
+    if (num >= 1024) return `${(num / 1024).toFixed(1)} KB`;
+    return `${num} B`;
+  };
+
   const attachExtras = () => {
     if (files && files.length > 0) {
       const list = document.createElement("div");
@@ -1240,13 +1698,14 @@ function appendPaletteMessage(role, text, files = null, animate = false) {
           (f) => `
             <div class="mini-file-row mono">
               <span class="truncate">${escapeHtml(f.relativePath)}</span>
-              <span class="text-muted">${f.sizeBytes} B</span>
+              <span class="text-muted">${formatFileSizeBytes(f.sizeBytes)}</span>
             </div>
           `
         )
         .join("");
       div.appendChild(list);
-    } else if (role === "assistant" && text.length > 12) {
+    }
+    if (role === "assistant" && text.length > 12) {
       const actions = document.createElement("div");
       actions.className = "msg-actions";
 
@@ -1450,117 +1909,164 @@ function renderSettingsDirs() {
   });
 }
 
-function switchSecurityTab(tab) {
-  document.getElementById("seg-sandbox")?.classList.toggle("active", tab === "sandbox");
-  document.getElementById("seg-shortcuts")?.classList.toggle("active", tab === "shortcuts");
-  document.getElementById("seg-history")?.classList.toggle("active", tab === "history");
-  document.getElementById("settings-form")?.classList.toggle("active", tab === "sandbox");
-  document.getElementById("shortcuts-panel")?.classList.toggle("active", tab === "shortcuts");
-  document.getElementById("history-panel")?.classList.toggle("active", tab === "history");
-  if (tab === "shortcuts") {
-    renderHoverShortcuts();
-    syncShortcutBuilderFields();
+function populateSettingsForm(status) {
+  if (!status) return;
+  draftAllowedDirs = [...(status.allowedDirectories || [])];
+  renderSettingsDirs();
+
+  const modelSelect = document.getElementById("settings-model");
+  if (modelSelect && Array.isArray(status.availableModels)) {
+    currentAvailableModels = status.availableModels;
+    modelSelect.innerHTML = status.availableModels
+      .map((m) => {
+        const badge = m.downloaded ? "Siap Offline" : `Unduh ${m.sizeHint}`;
+        return `<option value="${escapeHtml(m.fileName)}">${escapeHtml(m.label)} — ${badge}</option>`;
+      })
+      .join("");
+    modelSelect.value = status.modelFileName;
+    updateDownloadModelButton();
+    if (status.activeDownload?.status === "downloading") {
+      startDownloadProgressPolling();
+    }
+  }
+
+  document.getElementById("settings-categories").value = (status.categories || []).join(", ");
+  document.getElementById("settings-chat-style").value = chatStyle;
+  const hotkeyInput = document.getElementById("settings-hotkey");
+  if (hotkeyInput) {
+    hotkeyInput.value = status.hotkey || "Alt+Space";
+    hotkeyInput.classList.remove("recording");
+  }
+  document.getElementById("settings-ai-mode").value = status.aiMode || "hybrid";
+  const keyInput = document.getElementById("settings-gemini-key");
+  if (keyInput) {
+    keyInput.value = "";
+    keyInput.placeholder = status.hasGeminiApiKey
+      ? "API Key tersimpan (isi baru untuk mengganti)"
+      : "AIza... (opsional untuk soal sulit & riset web)";
+  }
+  document.getElementById("settings-days").value = String(status.oldInstallerDays ?? 30);
+  const notifDurInput = document.getElementById("settings-notif-duration");
+  if (notifDurInput) {
+    notifDurInput.value = String(status.notifDurationSec ?? notifDurationSec);
+  }
+  const autoStartChk = document.getElementById("chk-autostart");
+  if (autoStartChk) {
+    autoStartChk.checked = Boolean(status.autoStartOnBoot);
+  }
+  document.getElementById("settings-threads").value = String(status.threads ?? 4);
+  if (status.voiceStatus) {
+    populateVoiceStudio(status.voiceStatus);
   }
 }
 
-async function openSecurityDrawer(initialTab = "sandbox") {
+async function loadSecurityHistory() {
+  const list = document.getElementById("history-list");
+  if (!list) return;
+  list.innerHTML = `<div class="op-row"><span class="op-paths mono text-muted">Memuat riwayat SHA-256...</span></div>`;
+
   try {
-    const [status, hist] = await Promise.all([rpc("getStatus"), rpc("getHistory")]);
-
-    draftAllowedDirs = [...status.allowedDirectories];
-    renderSettingsDirs();
-
-    const modelSelect = document.getElementById("settings-model");
-    if (modelSelect && Array.isArray(status.availableModels)) {
-      currentAvailableModels = status.availableModels;
-      modelSelect.innerHTML = status.availableModels
-        .map((m) => {
-          const badge = m.downloaded ? "Siap Offline" : `Unduh ${m.sizeHint}`;
-          return `<option value="${escapeHtml(m.fileName)}">${escapeHtml(m.label)} — ${badge}</option>`;
-        })
-        .join("");
-      modelSelect.value = status.modelFileName;
-      updateDownloadModelButton();
-      if (status.activeDownload?.status === "downloading") {
-        startDownloadProgressPolling();
-      }
-    }
-
-    document.getElementById("settings-categories").value = status.categories.join(", ");
-    document.getElementById("settings-chat-style").value = chatStyle;
-    const hotkeyInput = document.getElementById("settings-hotkey");
-    if (hotkeyInput) {
-      hotkeyInput.value = status.hotkey || "Alt+Space";
-      hotkeyInput.classList.remove("recording");
-    }
-    document.getElementById("settings-ai-mode").value = status.aiMode || "hybrid";
-    const keyInput = document.getElementById("settings-gemini-key");
-    if (keyInput) {
-      keyInput.value = "";
-      keyInput.placeholder = status.hasGeminiApiKey
-        ? "API Key tersimpan (isi baru untuk mengganti)"
-        : "AIza... (opsional untuk soal sulit & riset web)";
-    }
-    document.getElementById("settings-days").value = String(status.oldInstallerDays);
-    const notifDurInput = document.getElementById("settings-notif-duration");
-    if (notifDurInput) {
-      notifDurInput.value = String(status.notifDurationSec ?? notifDurationSec);
-    }
-    const autoStartChk = document.getElementById("chk-autostart");
-    if (autoStartChk) {
-      autoStartChk.checked = Boolean(status.autoStartOnBoot);
-    }
-    document.getElementById("settings-threads").value = String(status.threads);
-
-    const list = document.getElementById("history-list");
+    const hist = await rpc("getHistory");
     list.innerHTML = "";
     const records = hist.records ?? [];
     if (records.length === 0) {
       list.innerHTML = `<div class="op-row"><span class="op-paths mono text-muted">Belum ada riwayat transaksi SHA-256.</span></div>`;
-    } else {
-      for (const rec of records.slice(0, 10)) {
-        const row = document.createElement("div");
-        row.className = "op-row";
-        row.innerHTML = `
-          <div class="op-paths mono">
-            <span>${escapeHtml(toRelative(rec.destination, currentSandboxRoot))}</span>
-            <span class="text-muted"> ↩ ${escapeHtml(toRelative(rec.source, currentSandboxRoot))}</span>
-          </div>
-          <div class="header-right-group">
-            <span class="op-badge mono sha">SHA-256 ✓</span>
-            ${
-              rec.rolledBackAt
-                ? `<span class="op-badge mono rename">DONE</span>`
-                : `<button type="button" class="pill-btn-muted mono btn-rb" data-tx-id="${escapeHtml(rec.transactionId)}">Rollback</button>`
-            }
-          </div>
-        `;
-        const rbBtn = row.querySelector(".btn-rb");
-        if (rbBtn) {
-          rbBtn.addEventListener("click", async () => {
-            const txId = rbBtn.getAttribute("data-tx-id");
-            rbBtn.disabled = true;
-            rbBtn.textContent = "...";
-            try {
-              await rpc("rollback", { transactionId: txId });
-              showToast("SHA-256 verified! File dikembalikan.", "ok");
-              await refreshStatus();
-              await openSecurityDrawer("history");
-            } catch (err) {
-              showToast(`Rollback dibatalkan: ${err}`, "err");
-              rbBtn.disabled = false;
-              rbBtn.textContent = "Rollback";
-            }
-          });
-        }
-        list.appendChild(row);
-      }
+      return;
     }
 
-    switchSecurityTab(initialTab);
-    setIslandState("security");
+    for (const rec of records.slice(0, 10)) {
+      const row = document.createElement("div");
+      row.className = "op-row";
+      row.innerHTML = `
+        <div class="op-paths mono">
+          <span>${escapeHtml(toRelative(rec.destination, currentSandboxRoot))}</span>
+          <span class="text-muted"> ↩ ${escapeHtml(toRelative(rec.source, currentSandboxRoot))}</span>
+        </div>
+        <div class="header-right-group">
+          <span class="op-badge mono sha">SHA-256 ✓</span>
+          ${
+            rec.rolledBackAt
+              ? `<span class="op-badge mono rename">DONE</span>`
+              : `<button type="button" class="pill-btn-muted mono btn-rb" data-tx-id="${escapeHtml(rec.transactionId)}">Rollback</button>`
+          }
+        </div>
+      `;
+      const rbBtn = row.querySelector(".btn-rb");
+      if (rbBtn) {
+        rbBtn.addEventListener("click", async () => {
+          const txId = rbBtn.getAttribute("data-tx-id");
+          rbBtn.disabled = true;
+          rbBtn.textContent = "...";
+          try {
+            await rpc("rollback", { transactionId: txId });
+            showToast("SHA-256 verified! File dikembalikan.", "ok");
+            void refreshStatus();
+            await loadSecurityHistory();
+          } catch (err) {
+            showToast(`Rollback dibatalkan: ${err}`, "err");
+            rbBtn.disabled = false;
+            rbBtn.textContent = "Rollback";
+          }
+        });
+      }
+      list.appendChild(row);
+    }
   } catch (err) {
-    showToast(`Gagal memuat Security & Rollback: ${err}`, "err");
+    list.innerHTML = `<div class="op-row"><span class="op-paths mono text-muted">Gagal memuat riwayat: ${escapeHtml(String(err))}</span></div>`;
+  }
+}
+
+function switchSecurityTab(tab) {
+  document.getElementById("seg-sandbox")?.classList.toggle("active", tab === "sandbox");
+  document.getElementById("seg-voice")?.classList.toggle("active", tab === "voice");
+  document.getElementById("seg-shortcuts")?.classList.toggle("active", tab === "shortcuts");
+  document.getElementById("seg-history")?.classList.toggle("active", tab === "history");
+  document.getElementById("settings-form")?.classList.toggle("active", tab === "sandbox");
+  document.getElementById("voice-panel")?.classList.toggle("active", tab === "voice");
+  document.getElementById("shortcuts-panel")?.classList.toggle("active", tab === "shortcuts");
+  document.getElementById("history-panel")?.classList.toggle("active", tab === "history");
+  if (tab === "voice") {
+    if (latestStatusCache?.voiceStatus) {
+      populateVoiceStudio(latestStatusCache.voiceStatus);
+    }
+    void rpc("getVoiceStatus")
+      .then((vs) => {
+        if (latestStatusCache) latestStatusCache.voiceStatus = vs;
+        populateVoiceStudio(vs);
+      })
+      .catch(() => {});
+  } else if (tab === "shortcuts") {
+    renderHoverShortcuts();
+    syncShortcutBuilderFields();
+  } else if (tab === "history") {
+    void loadSecurityHistory();
+  }
+  trackHitBoxForMs(250);
+}
+
+async function openSecurityDrawer(initialTab = "sandbox") {
+  // INSTANT 0ms OPEN: langsung tampilkan form dari cache memori tanpa menunggu RPC!
+  if (latestStatusCache) {
+    populateSettingsForm(latestStatusCache);
+  }
+  switchSecurityTab(initialTab);
+  setIslandState("security");
+
+  // Sinkronkan status terbaru secara non-blocking di latar belakang
+  try {
+    const status = await rpc("getStatus");
+    latestStatusCache = status;
+    // Hanya timpa form jika user masih di halaman security & belum mulai mengedit input
+    if (
+      document.getElementById("island")?.dataset.state === "security" &&
+      !["INPUT", "SELECT"].includes(document.activeElement?.tagName || "")
+    ) {
+      populateSettingsForm(status);
+    }
+  } catch (err) {
+    if (!latestStatusCache) {
+      showToast(`Gagal memuat pengaturan: ${err}`, "err");
+    }
   }
 }
 
@@ -1650,6 +2156,39 @@ function appendSensitiveAlertCard(alertData) {
   stream.scrollTop = stream.scrollHeight;
 }
 
+function attachAssistantActions(div, text, stream) {
+  if (!text || text.length <= 12) return;
+  const actions = document.createElement("div");
+  actions.className = "msg-actions";
+
+  const speakBtn = document.createElement("button");
+  speakBtn.type = "button";
+  speakBtn.className = "msg-copy-btn mono";
+  speakBtn.innerHTML = `<svg class="icon-inline-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1.5px;margin-right:3px"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>Bacakan`;
+  speakBtn.addEventListener("click", () => {
+    speakText(text);
+  });
+
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "msg-copy-btn mono";
+  copyBtn.textContent = "Copy";
+  copyBtn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(text.replace(/\*\*([^*]+)\*\*/g, "$1"));
+      copyBtn.textContent = "Copied";
+      setTimeout(() => (copyBtn.textContent = "Copy"), 1500);
+    } catch {
+      showToast("Gagal menyalin.", "err");
+    }
+  });
+
+  actions.appendChild(speakBtn);
+  actions.appendChild(copyBtn);
+  div.appendChild(actions);
+  if (stream) stream.scrollTop = stream.scrollHeight;
+}
+
 async function handleChatPrompt(rawMessage) {
   const message = rawMessage.trim();
   if (!message) return;
@@ -1658,17 +2197,62 @@ async function handleChatPrompt(rawMessage) {
   chatHistory.push({ role: "user", content: message });
   appendPaletteMessage("user", message);
 
-  // Tetap di State 3 (Chat) dengan animasi 3 titik berpikir — State 2 khusus Voice & Notifikasi!
+  const stream = document.getElementById("palette-chat-stream");
   const thinkingEl = appendThinkingBubble();
+  let streamedText = "";
+  let liveBodyEl = null;
+
+  const onTokenChunk = (chunk) => {
+    if (!liveBodyEl) {
+      thinkingEl.innerHTML = "";
+      if (chatStyle === "gemini") {
+        const row = document.createElement("div");
+        row.className = "gemini-ai-row";
+        row.innerHTML = `<svg class="gemini-spark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l2.2 6.8L21 11l-6.8 2.2L12 20l-2.2-6.8L3 11l6.8-2.2L12 2z"/></svg>`;
+        liveBodyEl = document.createElement("div");
+        liveBodyEl.className = "gemini-ai-content";
+        row.appendChild(liveBodyEl);
+        thinkingEl.appendChild(row);
+      } else {
+        liveBodyEl = document.createElement("div");
+        thinkingEl.appendChild(liveBodyEl);
+      }
+    }
+    streamedText += chunk;
+    liveBodyEl.innerHTML = `${formatSimpleMarkdown(streamedText)}<span class="ai-caret"></span>`;
+    if (stream) stream.scrollTop = stream.scrollHeight;
+  };
 
   try {
-    const res = await rpc("chat", {
-      message,
-      history: chatHistory.slice(-6),
-      enableAiForFiles,
-    });
+    const res = await rpcStream(
+      "chat",
+      {
+        message,
+        history: chatHistory.slice(-8),
+        enableAiForFiles,
+      },
+      onTokenChunk
+    );
+
+    let historyContent = res.reply;
+    if (res.attachment?.type === "files" && Array.isArray(res.attachment.files) && res.attachment.files.length > 0) {
+      const topNames = res.attachment.files
+        .slice(0, 8)
+        .map((f) => f.relativePath)
+        .join(", ");
+      historyContent = `${res.reply}\n[File terlampir: ${topNames}]`.slice(0, 1450);
+    }
+    chatHistory.push({ role: "assistant", content: historyContent.slice(0, 1450) });
+
+    // Jika token sudah di-stream langsung dari Qwen 1.5B secara real-time, finalisasi di bubble yang sama!
+    if (liveBodyEl && !res.attachment) {
+      liveBodyEl.innerHTML = formatSimpleMarkdown(res.reply);
+      thinkingEl.classList.remove("typing");
+      attachAssistantActions(thinkingEl, res.reply, stream);
+      return;
+    }
+
     thinkingEl.remove();
-    chatHistory.push({ role: "assistant", content: res.reply });
 
     if (res.attachment?.type === "plan" && res.attachment.plan) {
       appendPaletteMessage("assistant", res.reply);
@@ -1677,12 +2261,12 @@ async function handleChatPrompt(rawMessage) {
       await openSecurityDrawer("history");
     } else if (res.attachment?.type === "timer" && res.attachment.seconds) {
       startFocusTimer(res.attachment.seconds);
-      appendPaletteMessage("assistant", res.reply, null, true);
+      appendPaletteMessage("assistant", res.reply, null, false);
     } else if (res.attachment?.type === "reminder" && res.attachment.seconds) {
       startFocusTimer(res.attachment.seconds, res.attachment.text || "Pengingat");
-      appendPaletteMessage("assistant", res.reply, null, true);
+      appendPaletteMessage("assistant", res.reply, null, false);
     } else if (res.attachment?.type === "setting_applied") {
-      appendPaletteMessage("assistant", res.reply, null, true);
+      appendPaletteMessage("assistant", res.reply, null, false);
       if (res.attachment.setting === "notifDurationSec") {
         notifDurationSec = Number(res.attachment.value) || 4;
       } else if (res.attachment.setting === "chatStyle") {
@@ -1694,7 +2278,7 @@ async function handleChatPrompt(rawMessage) {
         hoverShortcuts.push(res.attachment.value);
         saveHoverShortcuts();
       }
-      await refreshStatus();
+      void refreshStatus();
       showIslandNotification(
         res.attachment.notifTitle || "Pengaturan Diperbarui",
         res.attachment.notifSub || "Diterapkan oleh Asisten AI",
@@ -1704,9 +2288,9 @@ async function handleChatPrompt(rawMessage) {
       appendPaletteMessage("assistant", res.reply, null, false);
       appendSensitiveAlertCard(res.attachment);
     } else if (res.attachment?.type === "files") {
-      appendPaletteMessage("assistant", res.reply, res.attachment.files, true);
+      appendPaletteMessage("assistant", res.reply, res.attachment.files, false);
     } else {
-      appendPaletteMessage("assistant", res.reply, null, true);
+      appendPaletteMessage("assistant", res.reply, null, false);
     }
   } catch (err) {
     thinkingEl.remove();
@@ -1838,7 +2422,16 @@ async function saveSettings(event) {
   const aiMode = document.getElementById("settings-ai-mode")?.value || "hybrid";
   const rawGeminiKey = document.getElementById("settings-gemini-key")?.value.trim();
 
+  const saveBtn = document.getElementById("btn-settings-save");
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Menyimpan...";
+  }
+
   try {
+    if (typeof invoke === "function") {
+      void invoke("set_global_hotkey", { hotkey: hotkeyVal }).catch(() => {});
+    }
     await rpc("updateConfig", {
       allowedDirectories: draftAllowedDirs,
       categories,
@@ -1851,18 +2444,38 @@ async function saveSettings(event) {
       ...(modelFileName ? { modelFileName } : {}),
       ...(rawGeminiKey ? { geminiApiKey: rawGeminiKey } : {}),
     });
-    if (typeof invoke === "function") {
-      await invoke("set_global_hotkey", { hotkey: hotkeyVal });
+
+    // Perbarui cache lokal seketika & jalankan refresh di latar belakang (non-blocking!)
+    if (latestStatusCache) {
+      latestStatusCache = {
+        ...latestStatusCache,
+        allowedDirectories: [...draftAllowedDirs],
+        categories,
+        oldInstallerDays,
+        notifDurationSec: nextNotifDuration,
+        autoStartOnBoot,
+        hotkey: hotkeyVal,
+        threads,
+        aiMode,
+        ...(modelFileName ? { modelFileName } : {}),
+        ...(rawGeminiKey ? { hasGeminiApiKey: true } : {}),
+      };
     }
-    await refreshStatus();
+
     showIslandNotification(
       "Pengaturan Tersimpan",
       `Hotkey: ${hotkeyVal} • Notif: ${nextNotifDuration}s`,
       "ok",
       true
     );
+    void refreshStatus();
   } catch (err) {
     showToast(`Ditolak: ${err}`, "err");
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = "Simpan Pengaturan";
+    }
   }
 }
 
@@ -1990,6 +2603,11 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     void listen("island-summon", () => {
       setIslandState("palette");
+    });
+    void listen("ai-chat-chunk", (ev) => {
+      if (typeof ev.payload === "string" && activeChunkHandler) {
+        activeChunkHandler(ev.payload);
+      }
     });
   }
 
@@ -2257,11 +2875,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Poll ringan status Music Player Windows setiap 5 detik & Notifikasi Windows/WhatsApp setiap 3.5 detik
+  // Poll ringan status Music Player (cache 0ms) & Notifikasi Windows/WhatsApp (lewati saat membuka Settings)
   void pollMediaPlayer("get");
-  setInterval(() => void pollMediaPlayer("get"), 5000);
+  setInterval(() => {
+    if (document.getElementById("island")?.dataset.state !== "security") {
+      void pollMediaPlayer("get");
+    }
+  }, 8000);
   void pollIncomingWindowsNotifications();
-  setInterval(() => void pollIncomingWindowsNotifications(), 3500);
+  setInterval(() => {
+    if (document.getElementById("island")?.dataset.state !== "security") {
+      void pollIncomingWindowsNotifications();
+    }
+  }, 4500);
 
   document.getElementById("btn-inspector-gear").addEventListener("click", () => void openSecurityDrawer("sandbox"));
   document.getElementById("btn-inspector-undo").addEventListener("click", () => void openSecurityDrawer("history"));
@@ -2270,8 +2896,142 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("btn-security-back").addEventListener("click", () => setIslandState("palette"));
   document.getElementById("seg-sandbox").addEventListener("click", () => switchSecurityTab("sandbox"));
+  document.getElementById("seg-voice")?.addEventListener("click", () => switchSecurityTab("voice"));
   document.getElementById("seg-shortcuts")?.addEventListener("click", () => switchSecurityTab("shortcuts"));
   document.getElementById("seg-history").addEventListener("click", () => switchSecurityTab("history"));
+
+  // Voice Clone Studio Event Handlers (100% Offline)
+  document.getElementById("btn-voice-setup")?.addEventListener("click", async () => {
+    const btn = document.getElementById("btn-voice-setup");
+    if (!btn) return;
+    btn.disabled = true;
+    btn.textContent = "Memulai...";
+    try {
+      await rpc("setupVoiceEngine");
+      startVoiceSetupPolling();
+      showToast("Mengunduh Piper ID + OpenVoice ONNX di latar belakang...", "ok");
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "Unduh Mesin Suara";
+      showToast(`Gagal memulai instalasi suara: ${err}`, "err");
+    }
+  });
+
+  document.getElementById("btn-voice-record")?.addEventListener("click", () => {
+    void toggleVoiceSampleRecording();
+  });
+
+  document.getElementById("btn-voice-upload")?.addEventListener("click", () => {
+    const vStatus = latestStatusCache?.voiceStatus;
+    if (!vStatus?.openVoiceReady) {
+      showToast("Klik 'Unduh Mesin Suara' terlebih dahulu sebelum upload sampel clone.", "err");
+      return;
+    }
+    document.getElementById("voice-file-input")?.click();
+  });
+
+  document.getElementById("voice-file-input")?.addEventListener("change", async (ev) => {
+    const input = ev.target;
+    const file = input?.files?.[0];
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      await submitVoiceSampleArrayBuffer(buf);
+    } finally {
+      input.value = "";
+    }
+  });
+
+  document.getElementById("btn-voice-del-profile")?.addEventListener("click", async () => {
+    const profSel = document.getElementById("voice-profile-select");
+    const profileId = profSel?.value;
+    if (!profileId) return;
+    try {
+      const res = await rpc("deleteVoiceProfile", { profileId });
+      if (latestStatusCache && res.voiceStatus) {
+        latestStatusCache.voiceStatus = res.voiceStatus;
+      }
+      populateVoiceStudio(res.voiceStatus);
+      showToast("Profil suara dihapus.", "ok");
+    } catch (err) {
+      showToast(`Gagal menghapus profil: ${err}`, "err");
+    }
+  });
+
+  document.getElementById("btn-voice-test")?.addEventListener("click", () => {
+    const mode = document.getElementById("voice-tts-mode")?.value || "clone";
+    const profileId = document.getElementById("voice-profile-select")?.value || undefined;
+    const speed = Number.parseFloat(document.getElementById("voice-speed")?.value || "1.05") || 1.05;
+    const testBtn = document.getElementById("btn-voice-test");
+    const testLabel = document.getElementById("btn-voice-test-label");
+
+    if ((mode === "clone" || mode === "piper") && !latestStatusCache?.voiceStatus?.piperReady) {
+      showToast("Mesin suara offline belum terpasang. Klik 'Unduh Mesin Suara' terlebih dahulu.", "err");
+      return;
+    }
+    if (mode === "clone" && !profileId) {
+      showToast("Rekam 10 detik atau upload sampel suara dulu, atau pilih mode Piper Bahasa Indonesia.", "err");
+      return;
+    }
+
+    if (testBtn) testBtn.disabled = true;
+    if (testLabel) testLabel.textContent = "Mensintesis...";
+    speakText(
+      "Halo, ini adalah suara asisten lokal aiKu yang berjalan seratus persen offline di laptop Anda.",
+      () => {
+        if (testBtn) testBtn.disabled = false;
+        if (testLabel) testLabel.textContent = "Tes Suara";
+      },
+      { mode, profileId, speed }
+    );
+    // Kembalikan tombol jika pemutaran berlangsung > 8 detik
+    setTimeout(() => {
+      if (testBtn) testBtn.disabled = false;
+      if (testLabel) testLabel.textContent = "Tes Suara";
+    }, 8500);
+  });
+
+  document.getElementById("btn-voice-save-cfg")?.addEventListener("click", async () => {
+    const ttsMode = document.getElementById("voice-tts-mode")?.value || "system";
+    const activeProfileId = document.getElementById("voice-profile-select")?.value || null;
+    const voiceSpeed = Number.parseFloat(document.getElementById("voice-speed")?.value || "1.05") || 1.05;
+    const saveBtn = document.getElementById("btn-voice-save-cfg");
+
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Menyimpan...";
+    }
+    try {
+      await rpc("updateConfig", {
+        ttsMode,
+        activeProfileId,
+        voiceSpeed,
+      });
+      if (latestStatusCache?.voiceStatus) {
+        latestStatusCache.voiceStatus = {
+          ...latestStatusCache.voiceStatus,
+          ttsMode,
+          activeProfileId,
+          speed: voiceSpeed,
+        };
+        populateVoiceStudio(latestStatusCache.voiceStatus);
+      }
+      showIslandNotification(
+        "Mode Suara Tersimpan",
+        `Aktif: ${ttsMode === "clone" ? "Custom Voice Clone Offline" : ttsMode === "piper" ? "Piper ID Offline" : "Sistem Windows"}`,
+        "ok",
+        true
+      );
+      void refreshStatus();
+    } catch (err) {
+      showToast(`Gagal menyimpan mode suara: ${err}`, "err");
+    } finally {
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = "Simpan Mode Suara";
+      }
+    }
+  });
   document.getElementById("sc-type")?.addEventListener("change", syncShortcutBuilderFields);
   document.getElementById("sc-target-app")?.addEventListener("change", syncShortcutBuilderFields);
   document.getElementById("sc-target-sys")?.addEventListener("change", syncShortcutBuilderFields);
@@ -2446,4 +3206,8 @@ document.addEventListener("DOMContentLoaded", () => {
   runBootWelcomeAnimation();
   trackHitBoxForMs(3000);
   void refreshStatus();
+  // Pre-warm Qwen 1.5B + preload System Prompt KV-Cache sejak awal agar chat pertama langsung ~100ms!
+  setTimeout(() => {
+    void rpc("warmupModel").catch(() => {});
+  }, 400);
 });

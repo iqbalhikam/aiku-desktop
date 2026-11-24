@@ -1,6 +1,6 @@
 {
   "name": "aiku-assistant",
-  "version": "1.0.0",
+  "version": "1.6.0",
   "description": "Lightweight local desktop file assistant powered by Qwen2.5-0.5B-Instruct with P0 filesystem security",
   "type": "module",
   "main": "dist/cli/index.js",
@@ -27,6 +27,7 @@
   "dependencies": {
     "adm-zip": "^0.5.16",
     "node-llama-cpp": "^3.4.0",
+    "onnxruntime-node": "^1.31.1",
     "pdf-parse": "^1.1.1",
     "zod": "^3.24.2"
   },

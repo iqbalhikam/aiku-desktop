@@ -396,8 +396,9 @@
               </span>
             </div>
 
-            <div class="segmented-tabs segmented-tabs-3">
+            <div class="segmented-tabs segmented-tabs-4">
               <button id="seg-sandbox" type="button" class="seg-btn active">Sandbox &amp; AI</button>
+              <button id="seg-voice" type="button" class="seg-btn">Voice Clone</button>
               <button id="seg-shortcuts" type="button" class="seg-btn">Hover Shortcuts</button>
               <button id="seg-history" type="button" class="seg-btn">SHA-256 History</button>
             </div>
@@ -591,6 +592,135 @@
                     placeholder="Nama tombol (maks 14 huruf, mis. Chrome)"
                   />
                   <button id="btn-sc-add" type="button" class="btn-apply">+ Tambah Shortcut</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Sub-tab Voice: 100% Offline Voice Clone Studio -->
+            <div id="voice-panel" class="subtab-panel">
+              <div class="voice-engine-card">
+                <div class="voice-engine-top">
+                  <div class="voice-engine-meta">
+                    <span id="voice-engine-dot" class="status-dot dot-muted"></span>
+                    <div>
+                      <div class="voice-engine-title">Piper ID + OpenVoice V2 ONNX</div>
+                      <div id="voice-engine-sub" class="voice-engine-sub mono">
+                        Belum terpasang • ~198 MB • 100% Lokal di CPU
+                      </div>
+                    </div>
+                  </div>
+                  <button id="btn-voice-setup" type="button" class="island-chip mono">
+                    Unduh Mesin Suara
+                  </button>
+                </div>
+                <div id="voice-dl-wrap" class="dl-progress-wrap hidden">
+                  <div class="dl-progress-meta mono">
+                    <span id="voice-dl-stage" class="truncate">Menyiapkan unduhan...</span>
+                    <span id="voice-dl-stats">0%</span>
+                  </div>
+                  <div class="dl-progress-track">
+                    <div id="voice-dl-fill" class="dl-progress-fill"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="voice-config-grid">
+                <div class="field-group">
+                  <label class="field-label mono" for="voice-tts-mode">Mode Suara AI</label>
+                  <select id="voice-tts-mode" class="full-select">
+                    <option value="clone">Custom Voice Clone (Offline)</option>
+                    <option value="piper">Piper Bahasa Indonesia (Offline)</option>
+                    <option value="system">Suara Sistem Windows (Bawaan)</option>
+                  </select>
+                </div>
+
+                <div class="field-group">
+                  <label class="field-label mono" for="voice-profile-select">Profil Suara Clone</label>
+                  <div class="voice-profile-row">
+                    <select id="voice-profile-select" class="full-select">
+                      <option value="">Belum ada sampel suara</option>
+                    </select>
+                    <button
+                      id="btn-voice-del-profile"
+                      type="button"
+                      class="icon-btn-tiny"
+                      title="Hapus profil suara terpilih"
+                    >
+                      <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                        <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="field-group">
+                  <label class="field-label mono" for="voice-speed">Kecepatan</label>
+                  <select id="voice-speed" class="full-select">
+                    <option value="0.9">0.90x (Tenang)</option>
+                    <option value="1">1.00x (Normal)</option>
+                    <option value="1.05" selected>1.05x (Natural)</option>
+                    <option value="1.15">1.15x (Responsif)</option>
+                    <option value="1.25">1.25x (Cepat)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="voice-sample-card">
+                <div class="voice-script-hint">
+                  <span class="voice-script-tag mono">TEKS CONTOH REKAMAN (6–10 DETIK)</span>
+                  <div class="voice-script-text">
+                    "Halo, saya sedang melatih suara asisten pribadi saya di laptop agar terdengar jernih, ramah, dan natural setiap hari."
+                  </div>
+                </div>
+
+                <div class="voice-capture-row">
+                  <input
+                    id="voice-new-name"
+                    type="text"
+                    class="full-input voice-name-input"
+                    maxlength="36"
+                    value="Suara Saya"
+                    placeholder="Nama profil (mis. Suara Iqbal)"
+                  />
+                  <button id="btn-voice-record" type="button" class="island-chip voice-action-btn mono">
+                    <svg class="icon-inline-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                      <rect x="9" y="2" width="6" height="11" rx="3" />
+                      <path d="M5 10a7 7 0 0 0 14 0M12 17v4" />
+                    </svg>
+                    <span id="btn-voice-record-label">Rekam 10s</span>
+                  </button>
+                  <button id="btn-voice-upload" type="button" class="island-chip voice-action-btn mono">
+                    <svg class="icon-inline-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="17 8 12 3 7 8" />
+                      <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                    <span>Upload Audio</span>
+                  </button>
+                  <input
+                    id="voice-file-input"
+                    type="file"
+                    accept=".wav,.mp3,.m4a,.ogg,audio/*"
+                    class="hidden"
+                  />
+                </div>
+              </div>
+
+              <div class="inspector-footer">
+                <span id="voice-status-footnote" class="voice-footnote mono">
+                  100% Offline • Tanpa kirim rekaman ke cloud
+                </span>
+                <div class="inspector-actions">
+                  <button id="btn-voice-test" type="button" class="island-chip mono">
+                    <svg class="icon-inline-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                    </svg>
+                    <span id="btn-voice-test-label">Tes Suara</span>
+                  </button>
+                  <button id="btn-voice-save-cfg" type="button" class="btn-apply">
+                    Simpan Mode Suara
+                  </button>
                 </div>
               </div>
             </div>

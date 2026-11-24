@@ -13,7 +13,8 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".json": "application/json; charset=utf-8",
 };
 
-const MAX_BODY_BYTES = 64 * 1024;
+// Izinkan hingga 25 MB untuk unggahan sampel audio WAV Voice Clone lokal (127.0.0.1 only)
+const MAX_BODY_BYTES = 25 * 1024 * 1024;
 
 function openDesktopWindow(url: string): void {
   if (process.platform === "win32") {
@@ -34,19 +35,25 @@ async function readRequestBody(req: http.IncomingMessage): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
+    let overflowed = false;
 
     req.on("data", (chunk: Buffer) => {
+      if (overflowed) return;
       total += chunk.length;
       if (total > MAX_BODY_BYTES) {
-        reject(new Error("Payload terlalu besar."));
-        req.destroy();
+        overflowed = true;
+        chunks.length = 0;
+        req.resume();
+        reject(new Error("Ukuran sampel audio melebihi batas maksimal 25 MB."));
         return;
       }
       chunks.push(chunk);
     });
 
     req.on("end", () => {
-      resolve(Buffer.concat(chunks).toString("utf8"));
+      if (!overflowed) {
+        resolve(Buffer.concat(chunks).toString("utf8"));
+      }
     });
 
     req.on("error", reject);
@@ -63,6 +70,36 @@ async function startDesktopServer(): Promise<void> {
   const server = http.createServer((req, res) => {
     void (async () => {
       const reqUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+
+      // API RPC Stream endpoint (NDJSON real-time token streaming untuk respon AI instan!)
+      if (req.method === "POST" && reqUrl.pathname === "/api/rpc-stream") {
+        const providedToken = req.headers["x-aiku-token"];
+        if (providedToken !== sessionToken) {
+          res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ ok: false, error: "Token sesi tidak valid." }));
+          return;
+        }
+
+        try {
+          const rawBody = await readRequestBody(req);
+          res.writeHead(200, {
+            "Content-Type": "application/x-ndjson; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+          });
+          const response = await worker.handleRequest(rawBody, (_id, chunk) => {
+            res.write(`${JSON.stringify({ stream: chunk })}\n`);
+          });
+          res.end(`${JSON.stringify(response)}\n`);
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (!res.headersSent) {
+            res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+          }
+          res.end(`${JSON.stringify({ id: null, ok: false, error: message })}\n`);
+        }
+        return;
+      }
 
       // API RPC endpoint (dilindungi token sesi acak untuk mencegah CSRF lokal)
       if (req.method === "POST" && reqUrl.pathname === "/api/rpc") {

@@ -1,6 +1,6 @@
 [package]
 name = "aiku-desktop"
-version = "1.0.0"
+version = "1.6.0"
 description = "aiKu Desktop UI (Tauri v2 Rust Host + Node.js P0 Security Sidecar)"
 edition = "2021"
 

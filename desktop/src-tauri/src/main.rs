@@ -134,7 +134,13 @@ impl NodeRpcClient {
         matches!(self.child.try_wait(), Ok(None))
     }
 
-    fn call(&mut self, id: u64, method: &str, params: Value) -> Result<Value, String> {
+    fn call(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: Value,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<Value, String> {
         let req = RpcRequest { id, method, params };
         let mut line = serde_json::to_string(&req)
             .map_err(|e| format!("Gagal serialisasi JSON-RPC: {e}"))?;
@@ -147,25 +153,41 @@ impl NodeRpcClient {
             .flush()
             .map_err(|e| format!("Gagal flush stdin Node.js sidecar: {e}"))?;
 
-        let mut response_line = String::new();
-        let bytes = self
-            .stdout
-            .read_line(&mut response_line)
-            .map_err(|e| format!("Gagal membaca respons dari Node.js sidecar: {e}"))?;
+        loop {
+            let mut response_line = String::new();
+            let bytes = self
+                .stdout
+                .read_line(&mut response_line)
+                .map_err(|e| format!("Gagal membaca respons dari Node.js sidecar: {e}"))?;
 
-        if bytes == 0 {
-            return Err("Node.js sidecar menutup koneksi secara tak terduga.".to_string());
-        }
+            if bytes == 0 {
+                return Err("Node.js sidecar menutup koneksi secara tak terduga.".to_string());
+            }
 
-        let parsed: RpcResponse = serde_json::from_str(response_line.trim())
-            .map_err(|e| format!("Respons JSON-RPC tidak valid: {e}"))?;
+            let trimmed = response_line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
 
-        if parsed.ok {
-            Ok(parsed.result.unwrap_or(Value::Null))
-        } else {
-            Err(parsed
-                .error
-                .unwrap_or_else(|| "Terjadi kesalahan tidak diketahui pada runtime.".to_string()))
+            let raw_val: Value = serde_json::from_str(trimmed)
+                .map_err(|e| format!("Respons JSON-RPC tidak valid: {e}"))?;
+
+            // Jika baris ini adalah chunk token streaming real-time, langsung pancarkan ke UI!
+            if let Some(chunk) = raw_val.get("stream").and_then(|v| v.as_str()) {
+                let _ = app_handle.emit("ai-chat-chunk", chunk.to_string());
+                continue;
+            }
+
+            let parsed: RpcResponse = serde_json::from_value(raw_val)
+                .map_err(|e| format!("Struktur respons JSON-RPC tidak valid: {e}"))?;
+
+            if parsed.ok {
+                return Ok(parsed.result.unwrap_or(Value::Null));
+            } else {
+                return Err(parsed.error.unwrap_or_else(|| {
+                    "Terjadi kesalahan tidak diketahui pada runtime.".to_string()
+                }));
+            }
         }
     }
 }
@@ -431,6 +453,7 @@ fn spawn_island_daemon(
 
 #[tauri::command]
 async fn rpc_call(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     method: String,
     params: Option<Value>,
@@ -457,7 +480,7 @@ async fn rpc_call(
             .as_mut()
             .ok_or_else(|| "Node.js sidecar tidak tersedia.".to_string())?;
 
-        client.call(id, &method, payload_params)
+        client.call(id, &method, payload_params, &app)
     })
     .await
     .map_err(|e| format!("Task RPC gagal dijalankan: {e}"))?

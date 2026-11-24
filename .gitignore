@@ -2,6 +2,9 @@ node_modules/
 dist/
 models/*.gguf
 models/*.part
+models/*.onnx
+models/*.zip
+models/voice/
 logs/
 sandbox/
 test-sandbox/

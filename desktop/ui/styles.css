@@ -989,6 +989,9 @@ body {
 .segmented-tabs.segmented-tabs-3 {
   grid-template-columns: 1fr 1fr 1fr;
 }
+.segmented-tabs.segmented-tabs-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
 
 .sc-header-row {
   display: flex;
@@ -2039,3 +2042,110 @@ body {
 .inbox-reply-row input:focus {
   border-color: rgba(255, 255, 255, 0.28);
 }
+
+/* =========================================
+   OFFLINE VOICE CLONE STUDIO (MONOCHROME OBSIDIAN)
+   ========================================= */
+.voice-engine-card,
+.voice-sample-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  background: #0d0d11;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.voice-engine-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.voice-engine-meta {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.dot-muted {
+  background: #52525b;
+  box-shadow: none;
+}
+
+.voice-engine-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f4f4f5;
+}
+
+.voice-engine-sub {
+  font-size: 10px;
+  color: #a1a1aa;
+}
+
+.voice-config-grid {
+  display: grid;
+  grid-template-columns: 1.25fr 1.35fr 0.85fr;
+  gap: 8px;
+}
+
+.voice-profile-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.voice-script-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed rgba(255, 255, 255, 0.11);
+}
+
+.voice-script-tag {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: #a1a1aa;
+}
+
+.voice-script-text {
+  font-size: 11px;
+  line-height: 1.38;
+  color: #e4e4e7;
+  user-select: text;
+}
+
+.voice-capture-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.voice-name-input {
+  flex: 1;
+}
+
+.voice-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.voice-action-btn.recording {
+  background: #f4f4f5;
+  color: #09090b;
+  border-color: #ffffff;
+}
+
+.voice-footnote {
+  font-size: 10px;
+  color: #a1a1aa;
+}
+

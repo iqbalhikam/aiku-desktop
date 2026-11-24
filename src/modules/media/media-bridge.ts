@@ -17,18 +17,15 @@ export const MediaSessionStatusSchema = z.object({
 
 export type MediaSessionStatus = z.infer<typeof MediaSessionStatusSchema>;
 
-/**
- * Deteksi & kontrol Music Player Windows 11 (Spotify, YouTube Music, Chrome, Edge, VLC)
- * melalui Windows Global System Media Transport Controls (GSMTC), 0 dependensi eksternal.
- */
-export async function queryWindowsMedia(
-  action: MediaControlAction = "get"
-): Promise<MediaSessionStatus> {
-  const safeAction = MediaControlActionSchema.parse(action);
+let cachedMediaStatus: MediaSessionStatus = { active: false };
+let lastMediaRefreshMs = 0;
+let mediaRefreshInFlight = false;
+const MEDIA_CACHE_TTL_MS = 10_000;
+
+async function runPowerShellMediaAction(safeAction: MediaControlAction): Promise<MediaSessionStatus> {
   if (process.platform !== "win32") {
     return { active: false };
   }
-
   const scriptPath = path.resolve(process.cwd(), "scripts", "win-media.ps1");
   try {
     const { stdout } = await execFileAsync(
@@ -56,4 +53,40 @@ export async function queryWindowsMedia(
   } catch {
     return { active: false };
   }
+}
+
+/**
+ * Deteksi & kontrol Music Player Windows 11 (Spotify, YouTube Music, Chrome, Edge, VLC).
+ * Mode "get" bersifat NON-BLOCKING (0ms): langsung mengembalikan cache memori dan memperbarui
+ * di latar belakang agar pipa JSON-RPC tidak pernah tertahan oleh proses PowerShell!
+ */
+export async function queryWindowsMedia(
+  action: MediaControlAction = "get"
+): Promise<MediaSessionStatus> {
+  const safeAction = MediaControlActionSchema.parse(action);
+  if (process.platform !== "win32") {
+    return { active: false };
+  }
+
+  if (safeAction === "get") {
+    const now = Date.now();
+    if (!mediaRefreshInFlight && now - lastMediaRefreshMs >= MEDIA_CACHE_TTL_MS) {
+      mediaRefreshInFlight = true;
+      lastMediaRefreshMs = now;
+      void runPowerShellMediaAction("get")
+        .then((fresh) => {
+          cachedMediaStatus = fresh;
+        })
+        .finally(() => {
+          mediaRefreshInFlight = false;
+        });
+    }
+    return cachedMediaStatus;
+  }
+
+  // Untuk aksi eksplisit user (toggle / next / prev), jalankan & perbarui cache
+  const updated = await runPowerShellMediaAction(safeAction);
+  cachedMediaStatus = updated;
+  lastMediaRefreshMs = Date.now();
+  return updated;
 }
