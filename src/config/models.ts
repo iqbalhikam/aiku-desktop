@@ -16,12 +16,36 @@ export interface AvailableModelInfo extends ModelPreset {
 
 export const MODEL_PRESETS: readonly ModelPreset[] = [
   {
-    id: "qwen2.5-0.5b",
-    label: "Qwen2.5 0.5B Instruct (Super Ringan)",
-    sizeHint: "~400 MB",
-    fileName: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    id: "qwen3-4b",
+    label: "Qwen3 4B Hybrid (Auto-Think • Rekomendasi)",
+    sizeHint: "~2.5 GB",
+    fileName: "Qwen3-4B-Q4_K_M.gguf",
     downloadUrl:
-      "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+      "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
+  },
+  {
+    id: "qwen3-1.7b",
+    label: "Qwen3 1.7B Hybrid (Cepat • Live Voice)",
+    sizeHint: "~1.1 GB",
+    fileName: "Qwen3-1.7B-Q8_0.gguf",
+    downloadUrl:
+      "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf",
+  },
+  {
+    id: "gemma-3-4b",
+    label: "Gemma 3 4B IT (Bahasa Indonesia Natural)",
+    sizeHint: "~2.5 GB",
+    fileName: "gemma-3-4b-it-Q4_K_M.gguf",
+    downloadUrl:
+      "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF/resolve/main/google_gemma-3-4b-it-Q4_K_M.gguf",
+  },
+  {
+    id: "qwen2.5-3b",
+    label: "Qwen2.5 3B Instruct (Cerdas)",
+    sizeHint: "~1.9 GB",
+    fileName: "qwen2.5-3b-instruct-q4_k_m.gguf",
+    downloadUrl:
+      "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
   },
   {
     id: "qwen2.5-1.5b",
@@ -32,12 +56,12 @@ export const MODEL_PRESETS: readonly ModelPreset[] = [
       "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
   },
   {
-    id: "qwen2.5-3b",
-    label: "Qwen2.5 3B Instruct (Cerdas)",
-    sizeHint: "~1.9 GB",
-    fileName: "qwen2.5-3b-instruct-q4_k_m.gguf",
+    id: "qwen2.5-0.5b",
+    label: "Qwen2.5 0.5B Instruct (Super Ringan)",
+    sizeHint: "~400 MB",
+    fileName: "qwen2.5-0.5b-instruct-q4_k_m.gguf",
     downloadUrl:
-      "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+      "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
   },
   {
     id: "llama-3.2-1b",

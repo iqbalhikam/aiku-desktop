@@ -13,3 +13,5 @@ aiku-desktop.exe
 desktop/src-tauri/target/
 .env
 .env.*
+data/
+skills/registry.json

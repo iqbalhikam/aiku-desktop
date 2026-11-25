@@ -62,14 +62,74 @@ async function readRequestBody(req: http.IncomingMessage): Promise<string> {
 
 async function startDesktopServer(): Promise<void> {
   const noOpen = process.argv.includes("--no-open");
-  const { config } = await loadOrCreateConfig();
-  const worker = new AiKuRpcWorker(config);
+  const { config, configPath } = await loadOrCreateConfig();
+  const worker = new AiKuRpcWorker(config, configPath);
+  worker.startMemoryHubServer();
+  let wallpaperChild: ReturnType<typeof spawn> | null = null;
+  let serverPort = 0;
   const sessionToken = crypto.randomBytes(24).toString("hex");
   const uiDir = path.resolve(process.cwd(), "desktop", "ui");
 
   const server = http.createServer((req, res) => {
     void (async () => {
       const reqUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+
+      // Direct Unified Memory Graph endpoint untuk wallpaper.html
+      if (req.method === "GET" && reqUrl.pathname === "/api/memory-graph") {
+        const rpcRes = await worker.handleRequest(
+          JSON.stringify({ id: "graph", method: "getMemoryGraph", params: {} })
+        );
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify(rpcRes.ok ? rpcRes.result : { nodes: [], edges: [] }));
+        return;
+      }
+
+      // Toggle Native Windows WorkerW Live Wallpaper (bekerja di mode npm run ui tanpa Rust!)
+      if (req.method === "POST" && reqUrl.pathname === "/api/wallpaper-toggle") {
+        const providedToken = req.headers["x-aiku-token"];
+        if (providedToken !== sessionToken) {
+          res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ ok: false, error: "Token sesi tidak valid." }));
+          return;
+        }
+        try {
+          const rawBody = await readRequestBody(req);
+          const body = JSON.parse(rawBody || "{}") as { enabled?: boolean };
+          const wantEnabled = Boolean(body.enabled);
+          if (!wantEnabled) {
+            if (wallpaperChild && !wallpaperChild.killed) {
+              wallpaperChild.kill();
+            }
+            wallpaperChild = null;
+            res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({ ok: true, enabled: false }));
+            return;
+          }
+
+          if (!wallpaperChild || wallpaperChild.killed) {
+            const psScript = path.resolve(process.cwd(), "desktop", "windows-island", "wallpaper.ps1");
+            const wallUrl = `http://127.0.0.1:${serverPort}/wallpaper.html`;
+            wallpaperChild = spawn(
+              "powershell.exe",
+              ["-NoProfile", "-STA", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", psScript, "-Url", wallUrl],
+              { stdio: "ignore", windowsHide: true }
+            );
+            wallpaperChild.on("exit", () => {
+              wallpaperChild = null;
+            });
+          }
+
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ ok: true, enabled: true }));
+        } catch (err: unknown) {
+          res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+        }
+        return;
+      }
 
       // API RPC Stream endpoint (NDJSON real-time token streaming untuk respon AI instan!)
       if (req.method === "POST" && reqUrl.pathname === "/api/rpc-stream") {
@@ -182,6 +242,7 @@ async function startDesktopServer(): Promise<void> {
     throw new Error("Gagal mendapatkan port lokal server UI.");
   }
 
+  serverPort = address.port;
   const url = `http://127.0.0.1:${address.port}`;
   console.log(`\n[aiKu Desktop UI] Berjalan lokal di: ${url}`);
   console.log(`[aiKu Sandbox]    Terkunci pada: ${config.allowedDirectories.join(", ")}`);

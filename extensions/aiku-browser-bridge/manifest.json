@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "aiku AI Memory Bridge",
+  "version": "1.0.0",
+  "description": "Menghubungkan obrolan Gemini Web (serta ChatGPT & Claude) secara 100% lokal ke Live Wallpaper Knowledge Graph milik aiku di 127.0.0.1.",
+  "host_permissions": [
+    "http://127.0.0.1:47891/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://gemini.google.com/*",
+        "https://chatgpt.com/*",
+        "https://claude.ai/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

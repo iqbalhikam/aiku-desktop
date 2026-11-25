@@ -15,6 +15,9 @@ import {
   formatLiveWebObservation,
   needsLiveWebInfo,
 } from "../core/web/live-search.js";
+import { SkillManager } from "../core/skills/skill-manager.js";
+import { buildWorkspaceGraph } from "../core/graph/workspace-graph.js";
+import { AiMemoryHub } from "../core/graph/ai-memory-hub.js";
 import {
   OfflineVoiceCloneEngine,
   StreamingSpeechClauseAccumulator,
@@ -93,8 +96,35 @@ const RpcRequestSchema = z
       "deleteVoiceProfile",
       "synthesizeSpeech",
       "executeApprovedCommand",
+      "listSkills",
+      "uploadSkill",
+      "toggleSkill",
+      "deleteSkill",
+      "getWorkspaceGraph",
+      "getMemoryGraph",
+      "syncAntigravityMemory",
     ]),
     params: z.record(z.unknown()).default({}),
+  })
+  .strict();
+
+const UploadSkillParamsSchema = z
+  .object({
+    filename: z.string().min(1).max(160),
+    content: z.string().min(1).max(65536),
+  })
+  .strict();
+
+const ToggleSkillParamsSchema = z
+  .object({
+    id: z.string().min(1).max(80),
+    enabled: z.boolean(),
+  })
+  .strict();
+
+const DeleteSkillParamsSchema = z
+  .object({
+    id: z.string().min(1).max(80),
   })
   .strict();
 
@@ -114,6 +144,7 @@ const ChatParamsSchema = z
       .default([]),
     enableAiForFiles: z.boolean().default(false),
     streamVoice: z.boolean().default(false),
+    enableThinking: z.boolean().default(false),
   })
   .strict();
 
@@ -263,6 +294,8 @@ export class AiKuRpcWorker {
   private safeExecutor: SafeExecutor;
   private llmEngine: LocalLlamaEngine;
   private readonly voiceEngine: OfflineVoiceCloneEngine;
+  private readonly skillManager: SkillManager;
+  private readonly memoryHub: AiMemoryHub;
   private readonly notesStore: QuickNotesStore;
   private readonly pendingPlans = new Map<string, ExecutionPlan>();
   private readonly pendingCommands = new Map<string, PendingApprovedCommand>();
@@ -286,6 +319,12 @@ export class AiKuRpcWorker {
       modelsDir: config.llm.modelsDir,
       threads: config.llm.threads,
     });
+    this.skillManager = new SkillManager(path.dirname(this.configPath));
+    this.memoryHub = new AiMemoryHub(path.dirname(this.configPath));
+  }
+
+  public startMemoryHubServer(): void {
+    this.memoryHub.startLocalServer();
   }
 
   public async handleRequest(
@@ -372,6 +411,7 @@ export class AiKuRpcWorker {
           threads: this.config.llm.threads,
           aiMode: this.config.llm.aiMode,
           hasGeminiApiKey: Boolean(this.config.llm.geminiApiKey && this.config.llm.geminiApiKey.trim().length > 0),
+          skills: this.skillManager.listSkillSummaries(),
           voiceStatus,
         };
       }
@@ -819,6 +859,45 @@ export class AiKuRpcWorker {
           durationMs: execRes.durationMs,
         };
       }
+
+      case "listSkills": {
+        return { skills: this.skillManager.listSkillSummaries() };
+      }
+
+      case "uploadSkill": {
+        const parsed = UploadSkillParamsSchema.parse(params);
+        const skill = this.skillManager.uploadSkill(parsed);
+        return { skill, skills: this.skillManager.listSkillSummaries() };
+      }
+
+      case "toggleSkill": {
+        const parsed = ToggleSkillParamsSchema.parse(params);
+        const skills = this.skillManager.toggleSkill(parsed.id, parsed.enabled);
+        return { skills };
+      }
+
+      case "deleteSkill": {
+        const parsed = DeleteSkillParamsSchema.parse(params);
+        const skills = this.skillManager.deleteSkill(parsed.id);
+        return { skills };
+      }
+
+      case "getWorkspaceGraph": {
+        const indexedEntries = await getIndexedEntriesCached(
+          this.config.allowedDirectories,
+          this.safeExecutor.getPathGuard()
+        );
+        return buildWorkspaceGraph(indexedEntries, 64);
+      }
+
+      case "getMemoryGraph": {
+        return this.memoryHub.getSnapshot();
+      }
+
+      case "syncAntigravityMemory": {
+        const added = this.memoryHub.syncAntigravityBrain();
+        return { added, graph: this.memoryHub.getSnapshot() };
+      }
     }
   }
 
@@ -1224,8 +1303,11 @@ export class AiKuRpcWorker {
       }
     }
 
-    // 9b. Live Web Search Real-Time di Latar Belakang untuk Qwen 3B Lokal (100% Gratis, TANPA membuka browser!)
-    //     Menangani pertanyaan info terkini, riset/research, maupun pertanyaan lanjutan seperti "coba bacain" / "yang naik apa?"
+    // 9b. Cocokkan Custom Skills (SKILL.md) + Live Web Search Real-Time di Latar Belakang
+    const skillMatch = this.skillManager.matchSkillsForMessage(input.message);
+    const effectiveUserPrompt = skillMatch.cleanedMessage || input.message;
+
+    //     Menangani pertanyaan info terkini, riset/research, skill research, maupun pertanyaan lanjutan seperti "coba bacain"
     const asksToReadPreviousWeb =
       this.lastLiveWebObservation !== null &&
       Date.now() - this.lastLiveWebObservation.fetchedAtMs < 5 * 60 * 1000 &&
@@ -1235,8 +1317,11 @@ export class AiKuRpcWorker {
 
     if (!toolObservation && asksToReadPreviousWeb && this.lastLiveWebObservation) {
       toolObservation = this.lastLiveWebObservation.text;
-    } else if (!toolObservation && !isPersonalOrFollowUpTopic && needsLiveWebInfo(input.message)) {
-      const liveWeb = await fetchLiveWebSnippets(input.message, input.history).catch(() => null);
+    } else if (
+      !toolObservation &&
+      (skillMatch.shouldRunWebSearch || (!isPersonalOrFollowUpTopic && needsLiveWebInfo(effectiveUserPrompt)))
+    ) {
+      const liveWeb = await fetchLiveWebSnippets(effectiveUserPrompt, input.history).catch(() => null);
       if (liveWeb) {
         toolObservation = formatLiveWebObservation(liveWeb);
         this.lastLiveWebObservation = {
@@ -1247,7 +1332,7 @@ export class AiKuRpcWorker {
       }
     }
 
-    // 10. Sintesis Respons Agentik Qwen 3B / Lokal Secara Real-Time (Streaming + Konteks Pribadi + Intonasi Lisan Manusia!)
+    // 10. Sintesis Respons Agentik Qwen 3B / Lokal Secara Real-Time (Streaming + Konteks Pribadi + Custom SKILL.md!)
     const asksIdentity = /\b(nama\s+(?:ku|saya)|siapa\s+(?:aku|saya))\b/.test(lower);
     const baseLiveContext = await this.buildPersonalLiveContext(
       lower,
@@ -1255,20 +1340,23 @@ export class AiKuRpcWorker {
       toolObservation,
       asksIdentity
     );
+    const contextWithSkills = [baseLiveContext, skillMatch.promptBlock].filter(Boolean).join("\n\n");
     const liveContext = input.streamVoice
       ? [
-          baseLiveContext,
+          contextWithSkills,
           "MODE PERCAKAPAN SUARA: Pengguna mendengarkan jawabanmu lewat audio. Langsung jawab inti pembicaraan dengan gaya ngobrol santai dan variatif. Jangan awali dengan 'Oke ...' atau memanggil nama pengguna, dan hindari daftar bernomor 1-2-3 atau simbol markdown.",
         ]
           .filter(Boolean)
           .join("\n")
-      : baseLiveContext;
+      : contextWithSkills;
 
     const ACTION_TAG_PREFIX_RE =
       /^\[(OPEN_APP|OPEN_FILE|OPEN_CHROME|OPEN_WEB|SEARCH_YT|SEARCH_WEB|SYS_CONTROL|SET_BRIGHTNESS|CREATE_FOLDER|RUN_CMD)\s*:/i;
 
     let streamHoldBuffer = "";
-    let holdMode = "none" as "none" | "bracket" | "write_file";
+    let holdMode = "none" as "none" | "bracket" | "write_file" | "think";
+    let thinkStartedAtMs: number | null = null;
+    let thinkEndedAtMs: number | null = null;
 
     const useServerWavVoiceStream =
       Boolean(input.streamVoice && onAudioChunk) && this.config.voice.ttsMode !== "system";
@@ -1327,12 +1415,26 @@ export class AiKuRpcWorker {
                 }
               } else if (holdMode === "write_file") {
                 streamHoldBuffer += ch;
-                // Jika setelah 12 karakter ternyata bukan <write_file, langsung lepaskan ke layar!
-                if (streamHoldBuffer.length === 12 && !/^<write_file\b/i.test(streamHoldBuffer)) {
+                if (/^<think>/i.test(streamHoldBuffer)) {
+                  holdMode = "think";
+                  thinkStartedAtMs = Date.now();
+                  // Kirim <think> hanya ke layar UI (untuk akordeon "Thought for Xs"), JANGAN ke suara TTS!
+                  onStreamChunk?.("<think>");
+                  streamHoldBuffer = "";
+                } else if (streamHoldBuffer.length === 12 && !/^<write_file\b/i.test(streamHoldBuffer)) {
+                  // Jika setelah 12 karakter ternyata bukan <write_file atau <think>, langsung lepaskan ke layar!
                   pushVisibleText(streamHoldBuffer);
                   streamHoldBuffer = "";
                   holdMode = "none";
                 } else if (/^<write_file\b[\s\S]*<\/write_file>$/i.test(streamHoldBuffer)) {
+                  streamHoldBuffer = "";
+                  holdMode = "none";
+                }
+              } else if (holdMode === "think") {
+                streamHoldBuffer += ch;
+                onStreamChunk?.(ch);
+                if (/<\/think>$/i.test(streamHoldBuffer)) {
+                  thinkEndedAtMs = Date.now();
                   streamHoldBuffer = "";
                   holdMode = "none";
                 }
@@ -1341,10 +1443,14 @@ export class AiKuRpcWorker {
           }
         : undefined;
 
+    // Mode Voice (streamVoice) WAJIB OFF agar langsung menjawab cepat; Mode Chat mengikuti toggle pengguna!
+    const effectiveThinking = Boolean(input.enableThinking) && !input.streamVoice;
+
     const rawReply = await this.llmEngine.chat({
       message: input.message,
       history: input.history,
       liveContext,
+      enableThinking: effectiveThinking,
       ...(filteredStreamCallback ? { onToken: filteredStreamCallback } : {}),
     });
 
@@ -1353,7 +1459,7 @@ export class AiKuRpcWorker {
         pushVisibleText(streamHoldBuffer);
       }
     } else if (holdMode === "write_file" && streamHoldBuffer.length > 0) {
-      if (!/^<write_file\b/i.test(streamHoldBuffer)) {
+      if (!/^<(?:write_file|think)\b/i.test(streamHoldBuffer)) {
         pushVisibleText(streamHoldBuffer);
       }
     }
@@ -1469,7 +1575,15 @@ export class AiKuRpcWorker {
       }
     }
 
+    const thinkMatch = rawReply.match(/<think>([\s\S]*?)<\/think>/i);
+    const thinkingText = thinkMatch?.[1]?.trim() || "";
+    const thinkingDurationSec =
+      thinkingText.length > 0 && thinkStartedAtMs !== null
+        ? Math.max(1, Math.round(((thinkEndedAtMs ?? Date.now()) - thinkStartedAtMs) / 1000))
+        : undefined;
+
     let cleanReply = rawReply
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
       .replace(/<write_file\s+path=["'][^"']+["']\s*>[\s\S]*?<\/write_file>/gi, "")
       .replace(/\[Buat[^\]]*:\s*\]/gi, "")
       .replace(
@@ -1501,8 +1615,18 @@ export class AiKuRpcWorker {
       }
     }
 
+    // Rekam percakapan AI lokal ke Unified AI Memory Hub untuk Live Wallpaper Graph
+    if (cleanReply.length > 0) {
+      this.memoryHub.ingest({
+        source: "aiku-local",
+        prompt: input.message,
+        answer: thinkingText ? `${thinkingText.slice(0, 600)}\n${cleanReply}` : cleanReply,
+      });
+    }
+
     return {
       reply: cleanReply || "Siap, sudah langsung dijalankan!",
+      ...(thinkingText ? { thinking: thinkingText, thinkingDurationSec: thinkingDurationSec ?? 1 } : {}),
       attachment: pendingAttachment,
     };
   }
@@ -1893,6 +2017,7 @@ async function runStdioServer(): Promise<void> {
 
   const { config, configPath } = await loadOrCreateConfig();
   const worker = new AiKuRpcWorker(config, configPath);
+  worker.startMemoryHubServer();
 
   const rl = readline.createInterface({
     input: stdin,

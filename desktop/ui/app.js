@@ -49,11 +49,29 @@ const HOVER_SVG_ICONS = {
   file: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l4 4v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M8 11h8M8 15h5"/></svg>`,
 };
 
+const BRAND_SHORTCUT_SVGS = {
+  OPEN_CHROME: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#EA4335"/><path d="M12 12L21.5 9A10 10 0 0 1 12 22Z" fill="#FBBC05"/><path d="M12 12L12 22A10 10 0 0 1 2.8 8Z" fill="#34A853"/><circle cx="12" cy="12" r="4.5" fill="#FFFFFF"/><circle cx="12" cy="12" r="3.4" fill="#4285F4"/></svg>`,
+  OPEN_VSCODE: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.5 2L22 4.2v15.6L17.5 22 9 14.5 4.2 18 2 16.8V7.2L4.2 6 9 9.5 17.5 2Z" fill="#007ACC"/><path d="M17.5 6.8L11.8 12l5.7 5.2V6.8Z" fill="#0D0D12"/></svg>`,
+  OPEN_SPOTIFY: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#1DB954"/><path d="M7 9.5c3.5-1 7.5-.7 10.5 1M7.8 12.8c2.8-.8 6-.5 8.5.9M8.5 15.8c2.2-.6 4.7-.4 6.6.7" stroke="#0B0B0F" stroke-width="1.7" stroke-linecap="round" fill="none"/></svg>`,
+  OPEN_YOUTUBE: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="4" fill="#FF0000"/><polygon points="10,9 16,12 10,15" fill="#FFFFFF"/></svg>`,
+  OPEN_WHATSAPP: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#25D366"/><path d="M9.5 8.5c.3-.5.7-.5 1 0l.8 1.6c.2.4.1.8-.2 1.1l-.5.5c.5 1 1.3 1.8 2.3 2.3l.5-.5c.3-.3.7-.4 1.1-.2l1.6.8c.5.3.5.7 0 1-.8.8-2 1-3.2.5-2.1-.9-4.1-2.9-5-5-.5-1.2-.3-2.4.6-3.1Z" fill="#FFFFFF"/></svg>`,
+};
+
+const AIKU_ACOUSTIC_LOGO_SVG = `<svg class="gemini-spark aiku-logo-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M13.5 11.2a3.8 3.8 0 1 0 0 5.6v-5.6ZM13.5 14v3.4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M16.9 10.6a5.4 5.4 0 0 1 0 6.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" opacity="0.82"/><path d="M19.5 8.4a8.4 8.4 0 0 1 0 11.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.45"/></svg>`;
+
+function getShortcutIconSvg(sc) {
+  if (sc && sc.type === "app" && BRAND_SHORTCUT_SVGS[sc.target]) {
+    return BRAND_SHORTCUT_SVGS[sc.target];
+  }
+  return HOVER_SVG_ICONS[sc?.icon] || HOVER_SVG_ICONS.app;
+}
+
 const DEFAULT_HOVER_SHORTCUTS = [
-  { id: "sc-chrome", type: "app", target: "OPEN_CHROME", label: "Chrome", icon: "globe" },
+  { id: "sc-chrome", type: "app", target: "OPEN_CHROME", label: "Google Chrome", icon: "globe" },
   { id: "sc-vscode", type: "app", target: "OPEN_VSCODE", label: "VS Code", icon: "code" },
-  { id: "sc-search", type: "web", target: "PROMPT_SEARCH", label: "Search", icon: "search" },
-  { id: "sc-sandbox", type: "system", target: "OPEN_SANDBOX", label: "Folder", icon: "folder" },
+  { id: "sc-spotify", type: "app", target: "OPEN_SPOTIFY", label: "Spotify", icon: "music" },
+  { id: "sc-youtube", type: "app", target: "OPEN_YOUTUBE", label: "YouTube", icon: "globe" },
+  { id: "sc-whatsapp", type: "app", target: "OPEN_WHATSAPP", label: "WhatsApp", icon: "app" },
 ];
 
 const APP_PRESET_META = {
@@ -109,7 +127,7 @@ function setBrowserSearchInputMode(enabled) {
   if (enabled) {
     input.placeholder = "Ketik pencarian Google atau URL website lalu tekan Enter...";
   } else {
-    input.placeholder = "Ask AI, hitung, cari file, atau ketik perintah...";
+    input.placeholder = "Tanya aiku, hitung, cari file, atau ketik perintah...";
   }
 }
 
@@ -186,9 +204,10 @@ function renderHoverShortcuts() {
       btn.type = "button";
       btn.className = "hover-sc-btn";
       btn.dataset.type = sc.type;
-      btn.title = `${sc.label} (${sc.type.toUpperCase()})`;
-      const svg = HOVER_SVG_ICONS[sc.icon] || HOVER_SVG_ICONS.app;
-      btn.innerHTML = `${svg}<span>${escapeHtml(sc.label)}</span>`;
+      btn.dataset.tip = `${sc.label} • Klik untuk membuka`;
+      btn.setAttribute("aria-label", sc.label);
+      const svg = getShortcutIconSvg(sc);
+      btn.innerHTML = svg;
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         void executeHoverShortcut(sc);
@@ -203,8 +222,8 @@ function renderHoverShortcuts() {
     hoverShortcuts.forEach((sc, idx) => {
       const chip = document.createElement("span");
       chip.className = "dir-chip mono";
-      const svg = HOVER_SVG_ICONS[sc.icon] || HOVER_SVG_ICONS.app;
-      chip.innerHTML = `<span style="width:12px;height:12px;display:inline-flex;color:#d4d4d8">${svg}</span><span>${escapeHtml(sc.label)}</span><span class="sc-chip-type">${escapeHtml(sc.type)}</span>`;
+      const svg = getShortcutIconSvg(sc);
+      chip.innerHTML = `<span style="width:14px;height:14px;display:inline-flex;color:#d4d4d8">${svg}</span><span>${escapeHtml(sc.label)}</span><span class="sc-chip-type">${escapeHtml(sc.type)}</span>`;
       if (hoverShortcuts.length > 1) {
         const rm = document.createElement("button");
         rm.type = "button";
@@ -262,6 +281,9 @@ function getTimeGreeting() {
 
 function formatShortModelName(modelFileName = "") {
   const lower = String(modelFileName).toLowerCase();
+  if (lower.includes("qwen3") && lower.includes("4b")) return "Qwen3 4B";
+  if (lower.includes("qwen3") && lower.includes("1.7b")) return "Qwen3 1.7B";
+  if (lower.includes("gemma-3") || (lower.includes("gemma") && lower.includes("4b"))) return "Gemma3 4B";
   if (lower.includes("0.5b")) return "Qwen 0.5B";
   if (lower.includes("1.5b")) return "Qwen 1.5B";
   if (lower.includes("3b")) return "Qwen 3B";
@@ -483,13 +505,24 @@ function runBootWelcomeAnimation() {
   const idleLabel = document.getElementById("idle-label");
   if (!island || !idleLabel) return;
 
+  // Stage 1: Appear (126px) — simple, clean pure monochrome pill with Acoustic a logo
   bootGreetingActive = true;
-  island.classList.add("boot-greeting");
-  idleLabel.textContent = `${getTimeGreeting()}`;
+  island.classList.remove("boot-greeting");
+  island.classList.add("boot-appear");
+  idleLabel.textContent = "aiku";
 
+  // Stage 2: Greeting (316px) — smooth subtle expansion with friendly greeting
+  setTimeout(() => {
+    if (!bootGreetingActive) return;
+    island.classList.remove("boot-appear");
+    island.classList.add("boot-greeting");
+    idleLabel.textContent = `${getTimeGreeting()} • aiku siap`;
+  }, 680);
+
+  // Stage 3: Idle Ready (220px) — smoothly settles into Idle Pill
   setTimeout(() => {
     bootGreetingActive = false;
-    island.classList.remove("boot-greeting");
+    island.classList.remove("boot-appear", "boot-greeting");
     if (timerRemainingSec === 0) {
       if (currentMediaStatus?.active && currentMediaStatus?.status === "Playing" && currentMediaStatus?.title) {
         const t = currentMediaStatus.title;
@@ -498,7 +531,7 @@ function runBootWelcomeAnimation() {
         idleLabel.textContent = latestStatusCache && !latestStatusCache.modelReady ? "Setup AI" : "AI Ready";
       }
     }
-  }, 2600);
+  }, 2400);
 }
 
 function recordClipboardEntry(text) {
@@ -653,6 +686,7 @@ function applyChatStyle(style) {
 let activeOfflineAudio = null;
 let activeSpeechSessionId = 0;
 let autoSpeakChat = localStorage.getItem("aiku_auto_speak") === "1";
+let chatThinkingEnabled = localStorage.getItem("aiku_chat_thinking") === "1";
 let wakeWordEnabled = localStorage.getItem("aiku_wake_word") !== "0";
 let wakeWordRecognition = null;
 let wakeWordRestartTimer = null;
@@ -1450,28 +1484,207 @@ function escapeHtml(text) {
     .replaceAll("'", "&#39;");
 }
 
+function highlightCodeMonochrome(escapedCode) {
+  const tokens = [];
+  const stash = (cls, text) => {
+    const id = tokens.length;
+    tokens.push(`<span class="${cls}">${text}</span>`);
+    return `\u0001TOK_${id}\u0001`;
+  };
+
+  let out = escapedCode
+    // Line comments (// ... or # ...)
+    .replace(/(^|\s)(\/\/[^\n]*|#(?![0-9a-fA-F]{3,6}\b)[^\n]*)/gm, (_m, lead, cmt) => `${lead}${stash("tok-cmt", cmt)}`)
+    // Block comments /* ... */
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => stash("tok-cmt", m))
+    // Double, single, backtick strings (already HTML-escaped)
+    .replace(/(&quot;(?:\\.|(?!&quot;)[^\\\n])*&quot;|&#39;(?:\\.|(?!&#39;)[^\\\n])*&#39;|`(?:\\.|[^`\\])*`)/g, (m) =>
+      stash("tok-str", m)
+    )
+    // Common keywords
+    .replace(
+      /\b(const|let|var|function|return|async|await|if|else|for|while|switch|case|break|continue|class|extends|import|export|from|default|try|catch|finally|throw|new|typeof|def|elif|pass|with|as|lambda|yield|True|False|None|fn|pub|struct|enum|impl|match|mut|use|mod|SELECT|FROM|WHERE|INSERT|UPDATE|DELETE|CREATE|TABLE)\b/g,
+      '<span class="tok-kw">$1</span>'
+    )
+    // Numbers
+    .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="tok-num">$1</span>');
+
+  tokens.forEach((html, idx) => {
+    out = out.replace(`\u0001TOK_${idx}\u0001`, html);
+  });
+  return out;
+}
+
+function buildCodeBlockHtml(lang, code) {
+  const cleanLang = (lang || "code").trim();
+  const cleanCode = String(code).replace(/^\n/, "").replace(/\n$/, "");
+  const highlighted = highlightCodeMonochrome(escapeHtml(cleanCode));
+  return `<div class="ai-code-wrap"><div class="ai-code-header"><span class="ai-code-lang mono">${escapeHtml(cleanLang)}</span><button type="button" class="ai-code-copy-btn" data-copy-code="1" title="Salin kode"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Salin</span></button></div><pre class="ai-code-block mono"><code>${highlighted}</code></pre></div>`;
+}
+
+function formatInlineMarkdown(raw) {
+  const inlineCodes = [];
+  let s = escapeHtml(raw).replace(/`([^`\n]+)`/g, (_m, code) => {
+    const idx = inlineCodes.length;
+    inlineCodes.push(`<code class="md-inline-code mono">${code}</code>`);
+    return `\u0002IC_${idx}\u0002`;
+  });
+
+  s = s
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a class="md-link" href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+    .replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+
+  inlineCodes.forEach((html, idx) => {
+    s = s.replace(`\u0002IC_${idx}\u0002`, html);
+  });
+  return s;
+}
+
 function formatSimpleMarkdown(text) {
+  const normalized = String(text ?? "").replace(/\r\n/g, "\n");
   const codeBlocks = [];
-  const withPlaceholders = String(text).replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, (_m, lang, code) => {
+
+  // 1. Extract closed fenced code blocks
+  let withPlaceholders = normalized.replace(/```([a-zA-Z0-9_+-]*)[ \t]*\n([\s\S]*?)```/g, (_m, lang, code) => {
     const idx = codeBlocks.length;
-    const langBadge = lang ? `<div class="ai-code-lang mono">${escapeHtml(lang)}</div>` : "";
-    codeBlocks.push(
-      `<div class="ai-code-wrap">${langBadge}<pre class="ai-code-block mono"><code>${escapeHtml(code.replace(/\n$/, ""))}</code></pre></div>`
-    );
-    return `\u0000CODEBLOCK_${idx}\u0000`;
+    codeBlocks.push(buildCodeBlockHtml(lang, code));
+    return `\n\u0000CODEBLOCK_${idx}\u0000\n`;
   });
 
-  let formatted = escapeHtml(withPlaceholders)
-    .replace(/^###\s+(.+)$/gm, "<strong>$1</strong>")
-    .replace(/^##\s+(.+)$/gm, "<strong>$1</strong>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/`([^`]+)`/g, '<code class="mono">$1</code>')
-    .replace(/\n/g, "<br />");
-
-  codeBlocks.forEach((html, idx) => {
-    formatted = formatted.replace(`\u0000CODEBLOCK_${idx}\u0000`, html);
+  // 2. Gracefully handle an unclosed fenced code block while streaming
+  withPlaceholders = withPlaceholders.replace(/```([a-zA-Z0-9_+-]*)[ \t]*\n([\s\S]*)$/, (_m, lang, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push(buildCodeBlockHtml(lang, code));
+    return `\n\u0000CODEBLOCK_${idx}\u0000\n`;
   });
-  return formatted;
+
+  const lines = withPlaceholders.split("\n");
+  const htmlParts = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      i++;
+      continue;
+    }
+
+    // Codeblock placeholder
+    const cbMatch = trimmed.match(/^\u0000CODEBLOCK_(\d+)\u0000$/);
+    if (cbMatch) {
+      htmlParts.push(codeBlocks[Number(cbMatch[1])] || "");
+      i++;
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      htmlParts.push('<hr class="md-hr" />');
+      i++;
+      continue;
+    }
+
+    // Headings
+    const hMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (hMatch) {
+      const level = hMatch[1].length;
+      htmlParts.push(`<div class="md-h md-h${level}">${formatInlineMarkdown(hMatch[2])}</div>`);
+      i++;
+      continue;
+    }
+
+    // Blockquote
+    if (/^>\s?/.test(trimmed)) {
+      const qLines = [];
+      while (i < lines.length && /^>\s?/.test(lines[i].trim())) {
+        qLines.push(formatInlineMarkdown(lines[i].trim().replace(/^>\s?/, "")));
+        i++;
+      }
+      htmlParts.push(`<blockquote class="md-quote">${qLines.join("<br />")}</blockquote>`);
+      continue;
+    }
+
+    // Markdown table (| a | b | followed by |---|---|)
+    if (
+      trimmed.startsWith("|") &&
+      i + 1 < lines.length &&
+      /^\|?[\s:-]+\|[\s|:-]+$/.test(lines[i + 1].trim())
+    ) {
+      const parseCells = (row) =>
+        row
+          .trim()
+          .replace(/^\|/, "")
+          .replace(/\|$/, "")
+          .split("|")
+          .map((c) => formatInlineMarkdown(c.trim()));
+      const headers = parseCells(lines[i]);
+      i += 2;
+      const bodyRows = [];
+      while (i < lines.length && lines[i].trim().startsWith("|")) {
+        bodyRows.push(parseCells(lines[i]));
+        i++;
+      }
+      const thHtml = headers.map((h) => `<th>${h}</th>`).join("");
+      const tbHtml = bodyRows
+        .map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`)
+        .join("");
+      htmlParts.push(
+        `<div class="md-table-wrap"><table class="md-table"><thead><tr>${thHtml}</tr></thead><tbody>${tbHtml}</tbody></table></div>`
+      );
+      continue;
+    }
+
+    // Unordered list
+    if (/^[-*•]\s+/.test(trimmed)) {
+      const items = [];
+      while (i < lines.length && /^[-*•]\s+/.test(lines[i].trim())) {
+        items.push(`<li>${formatInlineMarkdown(lines[i].trim().replace(/^[-*•]\s+/, ""))}</li>`);
+        i++;
+      }
+      htmlParts.push(`<ul class="md-list">${items.join("")}</ul>`);
+      continue;
+    }
+
+    // Ordered list
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const items = [];
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
+        items.push(`<li>${formatInlineMarkdown(lines[i].trim().replace(/^\d+\.\s+/, ""))}</li>`);
+        i++;
+      }
+      htmlParts.push(`<ol class="md-list md-olist">${items.join("")}</ol>`);
+      continue;
+    }
+
+    // Regular paragraph (group consecutive plain text lines)
+    const pLines = [];
+    while (i < lines.length) {
+      const cur = lines[i].trim();
+      if (
+        !cur ||
+        /^\u0000CODEBLOCK_\d+\u0000$/.test(cur) ||
+        /^(#{1,4})\s+/.test(cur) ||
+        /^[-*•]\s+/.test(cur) ||
+        /^\d+\.\s+/.test(cur) ||
+        /^>\s?/.test(cur) ||
+        /^(-{3,}|\*{3,}|_{3,})$/.test(cur)
+      ) {
+        break;
+      }
+      pLines.push(formatInlineMarkdown(lines[i]));
+      i++;
+    }
+    if (pLines.length > 0) {
+      htmlParts.push(`<p class="md-p">${pLines.join("<br />")}</p>`);
+    }
+  }
+
+  return `<div class="md-root">${htmlParts.join("")}</div>`;
 }
 
 function toRelative(fullPath, rootPath) {
@@ -1487,15 +1700,20 @@ function toRelative(fullPath, rootPath) {
 function resetBalloonVisuals() {
   const wrapper = document.querySelector(".notch-wrapper");
   const island = document.getElementById("island");
+  const earLeft = document.querySelector(".ear-left");
+  const earRight = document.querySelector(".ear-right");
   if (wrapper) {
     wrapper.classList.remove("stretching");
     wrapper.style.transform = "";
-    wrapper.style.transformOrigin = "top center";
+    wrapper.style.transformOrigin = "50% top";
   }
   if (island) {
     island.style.borderBottomLeftRadius = "";
     island.style.borderBottomRightRadius = "";
+    island.style.boxShadow = "";
   }
+  if (earLeft) earLeft.style.transform = "";
+  if (earRight) earRight.style.transform = "";
 }
 
 let isIdleHovered = false;
@@ -1581,8 +1799,10 @@ function clearActiveNotifVisuals() {
     activeNotifTimer = null;
   }
   activeNotifMode = false;
+  document.getElementById("island")?.classList.remove("is-notif");
   document.getElementById("active-notif-track")?.classList.add("hidden");
   document.getElementById("active-notif-visual")?.classList.add("hidden");
+  document.getElementById("btn-active-notif-action")?.classList.add("hidden");
   document.getElementById("active-voice-visual")?.classList.remove("hidden");
 }
 
@@ -1601,7 +1821,7 @@ function setIslandState(state) {
 
   island.className = `island state-${state}${chatStyle === "gemini" ? " chat-gemini" : ""}${
     state === "idle" && isIdleHovered ? " is-hovered" : ""
-  }`;
+  }${state === "active" && activeNotifMode ? " is-notif" : ""}`;
   island.dataset.state = state;
   trackHitBoxForMs(420);
 
@@ -1645,11 +1865,27 @@ function showIslandNotification(title, subtitle = "", type = "ok", forceFase2 = 
     const notifOrb = document.getElementById("active-notif-orb");
     const notifTrack = document.getElementById("active-notif-track");
     const notifBar = document.getElementById("active-notif-bar");
+    const notifActionBtn = document.getElementById("btn-active-notif-action");
 
     notifVisual?.classList.remove("hidden");
+    const isWhatsAppNotif = /whatsapp|wa\b/i.test(`${title} ${subtitle}`);
     if (notifOrb) {
       notifOrb.className = `notif-orb ${variant}`;
-      notifOrb.innerHTML = ALERT_SVG_ICONS[variant] || ALERT_SVG_ICONS.ok;
+      notifOrb.innerHTML = isWhatsAppNotif
+        ? BRAND_SHORTCUT_SVGS.OPEN_WHATSAPP
+        : ALERT_SVG_ICONS[variant] || ALERT_SVG_ICONS.ok;
+    }
+    if (notifActionBtn) {
+      notifActionBtn.textContent = isWhatsAppNotif ? "Balas" : "Buka";
+      notifActionBtn.classList.remove("hidden");
+      notifActionBtn.onclick = (e) => {
+        e.stopPropagation();
+        clearActiveNotifVisuals();
+        setIslandState("palette");
+        if (isWhatsAppNotif) {
+          document.getElementById("btn-open-inbox")?.click();
+        }
+      };
     }
 
     document.getElementById("active-title").textContent = title;
@@ -1842,6 +2078,8 @@ let suppressNextClick = false;
 function initElasticJellyPhysics() {
   const wrapper = document.querySelector(".notch-wrapper");
   const island = document.getElementById("island");
+  const earLeft = document.querySelector(".ear-left");
+  const earRight = document.querySelector(".ear-right");
   if (!wrapper || !island) return;
 
   let dragging = false;
@@ -1851,9 +2089,9 @@ function initElasticJellyPhysics() {
   let lastDy = 0;
   let animFrameId = null;
 
-  // State fisika pegas balon (scaleX, scaleY, shiftX, skewX)
-  let curSx = 1, curSy = 1, curTx = 0, curSkew = 0;
-  let velSx = 0, velSy = 0, velTx = 0, velSkew = 0;
+  // State fisika membran kain karet (scale, shift, skew, 3D tilt, & intensitas lengkungan)
+  let curSx = 1, curSy = 1, curTx = 0, curSkew = 0, curRotX = 0, curRotY = 0, curStretchX = 0, curStretchY = 0;
+  let velSx = 0, velSy = 0, velTx = 0, velSkew = 0, velRotX = 0, velRotY = 0, velStretchX = 0, velStretchY = 0;
 
   function stopSpringLoop() {
     if (animFrameId !== null) {
@@ -1862,48 +2100,95 @@ function initElasticJellyPhysics() {
     }
   }
 
-  function applyBalloonTransform() {
+  function applyRubberMembraneTransform() {
+    wrapper.style.transformOrigin = "50% top";
+    // Pure 2D transform + 2px top anchor bleed: tepi atas terkunci 100% rapat di y=0 tanpa celah 1px!
     wrapper.style.transform =
       `translateX(${curTx.toFixed(2)}px) scale(${curSx.toFixed(4)}, ${curSy.toFixed(4)}) skewX(${curSkew.toFixed(2)}deg)`;
+
+    // Lengkungan sudut bawah elips asimetris seperti kain karet yang melar mengikuti titik tarikan
+    const downPull = Math.max(0, curStretchY);
+    const leftPull = Math.max(0, -curStretchX);
+    const rightPull = Math.max(0, curStretchX);
+    const tension = Math.min(1, Math.hypot(curStretchX, downPull));
+
+    if (tension > 0.015) {
+      const baseR = island.dataset.state === "idle" ? 16 : 24;
+      const lx = Math.round(baseR + downPull * 24 + leftPull * 42 - rightPull * 6);
+      const ly = Math.round(baseR + downPull * 46 + leftPull * 56 - rightPull * 4);
+      const rx = Math.round(baseR + downPull * 24 + rightPull * 42 - leftPull * 6);
+      const ry = Math.round(baseR + downPull * 46 + rightPull * 56 - leftPull * 4);
+
+      island.style.borderBottomLeftRadius = `${Math.max(14, lx)}px ${Math.max(14, ly)}px`;
+      island.style.borderBottomRightRadius = `${Math.max(14, rx)}px ${Math.max(14, ry)}px`;
+      island.style.boxShadow = `inset 0 -1.5px 0 rgba(255, 255, 255, ${(0.1 + tension * 0.18).toFixed(3)})`;
+
+      // Telinga lengkung notch atas ikut melar elastis seperti sambungan kain karet di tepi layar
+      if (earLeft) {
+        const elSx = 1 + leftPull * 0.95 + downPull * 0.25;
+        const elSy = 1 + downPull * 1.25 + leftPull * 0.45;
+        earLeft.style.transform = `scale(${elSx.toFixed(3)}, ${elSy.toFixed(3)})`;
+      }
+      if (earRight) {
+        const erSx = 1 + rightPull * 0.95 + downPull * 0.25;
+        const erSy = 1 + downPull * 1.25 + rightPull * 0.45;
+        earRight.style.transform = `scale(${erSx.toFixed(3)}, ${erSy.toFixed(3)})`;
+      }
+    } else {
+      island.style.borderBottomLeftRadius = "";
+      island.style.borderBottomRightRadius = "";
+      island.style.boxShadow = "";
+      if (earLeft) earLeft.style.transform = "";
+      if (earRight) earRight.style.transform = "";
+    }
+
     pushHitBox();
   }
 
   function runBalloonSpringBounce() {
     stopSpringLoop();
-    const stiffness = 240;
-    const damping = 10.5;
+    const stiffness = 285;
+    const damping = 8.4;
     let lastTime = performance.now();
 
     const tick = (now) => {
       const dt = Math.min((now - lastTime) / 1000, 0.032);
       lastTime = now;
 
-      // Hukum Hooke teredam (damped harmonic oscillator) -> efek membal balon asli!
+      // Hukum Hooke teredam (damped harmonic oscillator) -> membal kenyal seperti kain karet!
       velSx += ((1 - curSx) * stiffness - velSx * damping) * dt;
       velSy += ((1 - curSy) * stiffness - velSy * damping) * dt;
       velTx += ((0 - curTx) * stiffness - velTx * damping) * dt;
       velSkew += ((0 - curSkew) * stiffness - velSkew * damping) * dt;
+      velRotX += ((0 - curRotX) * stiffness - velRotX * damping) * dt;
+      velRotY += ((0 - curRotY) * stiffness - velRotY * damping) * dt;
+      velStretchX += ((0 - curStretchX) * stiffness - velStretchX * damping) * dt;
+      velStretchY += ((0 - curStretchY) * stiffness - velStretchY * damping) * dt;
 
       curSx += velSx * dt;
       curSy += velSy * dt;
       curTx += velTx * dt;
       curSkew += velSkew * dt;
+      curRotX += velRotX * dt;
+      curRotY += velRotY * dt;
+      curStretchX += velStretchX * dt;
+      curStretchY += velStretchY * dt;
 
-      applyBalloonTransform();
+      applyRubberMembraneTransform();
 
       const energy =
         Math.abs(1 - curSx) + Math.abs(1 - curSy) + Math.abs(curTx) * 0.01 +
+        Math.abs(curSkew) * 0.015 + Math.abs(curStretchX) * 0.08 + Math.abs(curStretchY) * 0.08 +
         Math.abs(velSx) * 0.05 + Math.abs(velSy) * 0.05;
 
-      if (energy > 0.0025) {
+      if (energy > 0.002) {
         animFrameId = requestAnimationFrame(tick);
       } else {
         curSx = 1; curSy = 1; curTx = 0; curSkew = 0;
+        curRotX = 0; curRotY = 0; curStretchX = 0; curStretchY = 0;
         velSx = 0; velSy = 0; velTx = 0; velSkew = 0;
-        wrapper.style.transform = "";
-        wrapper.style.transformOrigin = "top center";
-        island.style.borderBottomLeftRadius = "";
-        island.style.borderBottomRightRadius = "";
+        velRotX = 0; velRotY = 0; velStretchX = 0; velStretchY = 0;
+        resetBalloonVisuals();
         animFrameId = null;
         pushHitBox(false);
       }
@@ -1915,7 +2200,7 @@ function initElasticJellyPhysics() {
   let activePointerId = null;
 
   island.addEventListener("pointerdown", (e) => {
-    if (e.target.closest("input, select, button, textarea")) return;
+    if (e.target.closest("input, select, button, textarea, canvas")) return;
     stopSpringLoop();
     dragging = true;
     movedEnough = false;
@@ -1943,31 +2228,28 @@ function initElasticJellyPhysics() {
     lastDy = dy;
     wrapper.classList.add("stretching");
 
-    // Efek tarik balon yang melar mulus tanpa lompatan titik jangkar (zero clipping di kanvas 960x620!)
-    const pullY = Math.max(-28, Math.min(150, dy));
-    const pullX = Math.max(-150, Math.min(150, dx));
+    // Efek tarik kain karet yang sangat elastis & 100% mengikuti arah kursor
+    const pullY = Math.max(-34, Math.min(200, dy));
+    const pullX = Math.max(-210, Math.min(210, dx));
 
-    const originX = 50 - Math.tanh(pullX / 120) * 18;
-    wrapper.style.transformOrigin = `${originX.toFixed(1)}% top`;
+    const downFactor = Math.tanh(Math.max(0, pullY) / 105);
+    const upFactor = Math.tanh(Math.max(0, -pullY) / 48);
+    const signedX = Math.tanh(pullX / 125);
+    const sideFactor = Math.abs(signedX);
 
-    const downFactor = Math.tanh(Math.max(0, pullY) / 95);
-    const upFactor = Math.tanh(Math.max(0, -pullY) / 50);
-    const sideFactor = Math.tanh(Math.abs(pullX) / 110);
+    // Volume-preserving rubber fabric physics:
+    // - Tarik ke bawah -> melar vertikal tinggi (hingga 1.46x) & pinggang sedikit menyempit seperti kain karet
+    // - Tarik ke kanan/kiri -> condong (skewX positif) & bergeser mulus MENGIKUTI arah kursor
+    curSy = 1 + downFactor * 0.46 - upFactor * 0.18 - sideFactor * 0.06;
+    curSx = 1 + sideFactor * 0.24 - downFactor * 0.13 + upFactor * 0.09;
+    curTx = signedX * 44;
+    curSkew = signedX * 11.5;
+    curRotX = downFactor * 4.5 - upFactor * 2.5;
+    curRotY = signedX * 5.5;
+    curStretchX = signedX;
+    curStretchY = downFactor;
 
-    // Volume-preserving balloon squash & stretch (terkontrol agar teks tetap rapi)
-    curSy = 1 + downFactor * 0.34 - upFactor * 0.16 - sideFactor * 0.08;
-    curSx = 1 + sideFactor * 0.2 - downFactor * 0.1 + upFactor * 0.08;
-    curTx = Math.tanh(pullX / 120) * 28;
-    curSkew = Math.tanh(pullX / 150) * -6;
-
-    // Ujung bawah ikut membulat seperti ujung balon yang ditarik
-    const extraRadius = Math.round(20 + downFactor * 26);
-    const leftBulge = pullX < 0 ? extraRadius + Math.round(sideFactor * 14) : extraRadius;
-    const rightBulge = pullX > 0 ? extraRadius + Math.round(sideFactor * 14) : extraRadius;
-    island.style.borderBottomLeftRadius = `${leftBulge}px`;
-    island.style.borderBottomRightRadius = `${rightBulge}px`;
-
-    applyBalloonTransform();
+    applyRubberMembraneTransform();
   });
 
   const endStretch = () => {
@@ -1983,8 +2265,6 @@ function initElasticJellyPhysics() {
         suppressNextClick = false;
       }, 130);
 
-      island.style.borderBottomLeftRadius = "";
-      island.style.borderBottomRightRadius = "";
       runBalloonSpringBounce();
 
       if (island.dataset.state === "idle" && lastDy > 56) {
@@ -2006,7 +2286,9 @@ function initElasticJellyPhysics() {
     activePointerId = null;
     stopSpringLoop();
     curSx = 1; curSy = 1; curTx = 0; curSkew = 0;
+    curRotX = 0; curRotY = 0; curStretchX = 0; curStretchY = 0;
     velSx = 0; velSy = 0; velTx = 0; velSkew = 0;
+    velRotX = 0; velRotY = 0; velStretchX = 0; velStretchY = 0;
     resetBalloonVisuals();
     pushHitBox(false);
   });
@@ -2037,7 +2319,7 @@ function appendPaletteMessage(role, text, files = null, animate = false) {
   if (role === "assistant" && chatStyle === "gemini") {
     const row = document.createElement("div");
     row.className = "gemini-ai-row";
-    row.innerHTML = `<svg class="gemini-spark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l2.2 6.8L21 11l-6.8 2.2L12 20l-2.2-6.8L3 11l6.8-2.2L12 2z"/></svg>`;
+    row.innerHTML = AIKU_ACOUSTIC_LOGO_SVG;
     bodyEl = document.createElement("div");
     bodyEl.className = "gemini-ai-content";
     row.appendChild(bodyEl);
@@ -2325,19 +2607,89 @@ function populateSettingsForm(status) {
   if (status.voiceStatus) {
     populateVoiceStudio(status.voiceStatus);
   }
+  if (Array.isArray(status.skills)) {
+    renderSkillsList(status.skills);
+  }
+}
+
+function renderSkillsList(skills) {
+  const list = document.getElementById("skills-list");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!Array.isArray(skills) || skills.length === 0) {
+    list.innerHTML = `<div class="skill-row"><span class="skill-desc">Belum ada skill terpasang. Klik + Upload SKILL.md untuk menambahkan.</span></div>`;
+    return;
+  }
+
+  skills.forEach((sk) => {
+    const row = document.createElement("div");
+    row.className = "skill-row";
+    const badges = [
+      `<span class="skill-pill mono">/${escapeHtml(sk.id)}</span>`,
+      sk.useWebSearch ? `<span class="skill-pill mono">Web</span>` : "",
+      sk.alwaysActive ? `<span class="skill-pill mono">Selalu Aktif</span>` : "",
+    ]
+      .filter(Boolean)
+      .join("");
+
+    row.innerHTML = `
+      <div class="skill-row-left">
+        <input type="checkbox" class="skill-toggle" ${sk.enabled ? "checked" : ""} title="Aktifkan / Nonaktifkan skill" />
+        <div class="skill-meta">
+          <div class="skill-title-line">
+            <span class="skill-name">${escapeHtml(sk.name)}</span>
+            ${badges}
+          </div>
+          <div class="skill-desc">${escapeHtml(sk.description || "")}</div>
+        </div>
+      </div>
+      ${
+        sk.builtIn
+          ? `<span class="skill-pill mono">Bawaan</span>`
+          : `<button type="button" class="icon-btn-tiny skill-del-btn" title="Hapus skill">
+              <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
+              </svg>
+            </button>`
+      }
+    `;
+
+    row.querySelector(".skill-toggle")?.addEventListener("change", async (e) => {
+      const enabled = Boolean(e.target.checked);
+      try {
+        const res = await rpc("toggleSkill", { id: sk.id, enabled });
+        renderSkillsList(res.skills);
+        showToast(`Skill ${sk.name} ${enabled ? "diaktifkan" : "dinonaktifkan"}.`, "ok");
+      } catch (err) {
+        showToast(`Gagal mengubah skill: ${err}`, "err");
+      }
+    });
+
+    row.querySelector(".skill-del-btn")?.addEventListener("click", async () => {
+      try {
+        const res = await rpc("deleteSkill", { id: sk.id });
+        renderSkillsList(res.skills);
+        showToast(`Skill ${sk.name} dihapus.`, "ok");
+      } catch (err) {
+        showToast(`Gagal menghapus skill: ${err}`, "err");
+      }
+    });
+
+    list.appendChild(row);
+  });
 }
 
 async function loadSecurityHistory() {
   const list = document.getElementById("history-list");
   if (!list) return;
-  list.innerHTML = `<div class="op-row"><span class="op-paths mono text-muted">Memuat riwayat SHA-256...</span></div>`;
+  list.innerHTML = `<div class="op-row"><span class="op-paths mono text-muted">Memuat riwayat aksi...</span></div>`;
 
   try {
     const hist = await rpc("getHistory");
     list.innerHTML = "";
     const records = hist.records ?? [];
     if (records.length === 0) {
-      list.innerHTML = `<div class="op-row"><span class="op-paths mono text-muted">Belum ada riwayat transaksi SHA-256.</span></div>`;
+      list.innerHTML = `<div class="op-row"><span class="op-paths mono text-muted">Belum ada riwayat perubahan file.</span></div>`;
       return;
     }
 
@@ -2350,11 +2702,11 @@ async function loadSecurityHistory() {
           <span class="text-muted"> ↩ ${escapeHtml(toRelative(rec.source, currentSandboxRoot))}</span>
         </div>
         <div class="header-right-group">
-          <span class="op-badge mono sha">SHA-256 ✓</span>
+          <span class="op-badge mono sha">Tercatat</span>
           ${
             rec.rolledBackAt
-              ? `<span class="op-badge mono rename">DONE</span>`
-              : `<button type="button" class="pill-btn-muted mono btn-rb" data-tx-id="${escapeHtml(rec.transactionId)}">Rollback</button>`
+              ? `<span class="op-badge mono rename">Dikembalikan</span>`
+              : `<button type="button" class="pill-btn-muted mono btn-rb" data-tx-id="${escapeHtml(rec.transactionId)}">Kembalikan</button>`
           }
         </div>
       `;
@@ -2366,13 +2718,13 @@ async function loadSecurityHistory() {
           rbBtn.textContent = "...";
           try {
             await rpc("rollback", { transactionId: txId });
-            showToast("SHA-256 verified! File dikembalikan.", "ok");
+            showToast("Berhasil! File dikembalikan ke posisi semula.", "ok");
             void refreshStatus();
             await loadSecurityHistory();
           } catch (err) {
-            showToast(`Rollback dibatalkan: ${err}`, "err");
+            showToast(`Pengembalian dibatalkan: ${err}`, "err");
             rbBtn.disabled = false;
-            rbBtn.textContent = "Rollback";
+            rbBtn.textContent = "Kembalikan";
           }
         });
       }
@@ -2635,6 +2987,33 @@ function attachAssistantActions(div, text, stream) {
   if (stream) stream.scrollTop = stream.scrollHeight;
 }
 
+function splitStreamedThinkAndAnswer(raw) {
+  const startIdx = raw.indexOf("<think>");
+  if (startIdx === -1) {
+    return { hasThink: false, inThink: false, thought: "", answer: raw };
+  }
+  const afterStart = raw.slice(startIdx + 7);
+  const endIdx = afterStart.indexOf("</think>");
+  if (endIdx === -1) {
+    return {
+      hasThink: true,
+      inThink: true,
+      thought: afterStart.trimStart(),
+      answer: raw.slice(0, startIdx).trim(),
+    };
+  }
+  const thought = afterStart.slice(0, endIdx).trim();
+  const answer = `${raw.slice(0, startIdx)}${afterStart.slice(endIdx + 8)}`.trimStart();
+  return { hasThink: true, inThink: false, thought, answer };
+}
+
+function createThoughtDetailsElement() {
+  const details = document.createElement("details");
+  details.className = "ai-thought-box";
+  details.innerHTML = `<summary class="ai-thought-summary"><span class="ai-thought-label">Thinking...</span><svg class="ai-thought-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg></summary><div class="ai-thought-body"></div>`;
+  return details;
+}
+
 async function handleChatPrompt(rawMessage) {
   const message = rawMessage.trim();
   if (!message) return;
@@ -2647,28 +3026,103 @@ async function handleChatPrompt(rawMessage) {
   const thinkingEl = appendThinkingBubble();
   let streamedText = "";
   let liveBodyEl = null;
+  let thoughtBoxEl = null;
+  let answerBodyEl = null;
+  let thinkStartMs = null;
+  let thinkEndMs = null;
+  let thinkTickTimer = null;
+  let userToggledThought = false;
+  let lastGraphSyncMs = 0;
+
+  const stopThinkTicker = () => {
+    if (thinkTickTimer) {
+      clearInterval(thinkTickTimer);
+      thinkTickTimer = null;
+    }
+  };
 
   const voiceSession = autoSpeakChat ? createRealtimeVoiceSession() : null;
 
+  const ensureLiveContainers = () => {
+    if (liveBodyEl) return;
+    thinkingEl.innerHTML = "";
+    if (chatStyle === "gemini") {
+      const row = document.createElement("div");
+      row.className = "gemini-ai-row";
+      row.innerHTML = AIKU_ACOUSTIC_LOGO_SVG;
+      liveBodyEl = document.createElement("div");
+      liveBodyEl.className = "gemini-ai-content";
+      row.appendChild(liveBodyEl);
+      thinkingEl.appendChild(row);
+    } else {
+      liveBodyEl = document.createElement("div");
+      thinkingEl.appendChild(liveBodyEl);
+    }
+    answerBodyEl = document.createElement("div");
+    liveBodyEl.appendChild(answerBodyEl);
+  };
+
   const onTokenChunk = (chunk) => {
-    if (!liveBodyEl) {
-      thinkingEl.innerHTML = "";
-      if (chatStyle === "gemini") {
-        const row = document.createElement("div");
-        row.className = "gemini-ai-row";
-        row.innerHTML = `<svg class="gemini-spark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l2.2 6.8L21 11l-6.8 2.2L12 20l-2.2-6.8L3 11l6.8-2.2L12 2z"/></svg>`;
-        liveBodyEl = document.createElement("div");
-        liveBodyEl.className = "gemini-ai-content";
-        row.appendChild(liveBodyEl);
-        thinkingEl.appendChild(row);
+    ensureLiveContainers();
+    streamedText += chunk;
+    const parsed = splitStreamedThinkAndAnswer(streamedText);
+
+    if (parsed.hasThink) {
+      if (!thoughtBoxEl) {
+        thoughtBoxEl = createThoughtDetailsElement();
+        thoughtBoxEl.open = true; // Otomatis terbuka saat sedang berpikir (seperti screenshot)
+        thoughtBoxEl.querySelector(".ai-thought-summary")?.addEventListener("click", () => {
+          userToggledThought = true;
+        });
+        liveBodyEl.insertBefore(thoughtBoxEl, answerBodyEl);
+        thinkStartMs = Date.now();
+        thinkTickTimer = setInterval(() => {
+          if (!thoughtBoxEl || !thoughtBoxEl.classList.contains("is-thinking")) {
+            stopThinkTicker();
+            return;
+          }
+          const lEl = thoughtBoxEl.querySelector(".ai-thought-label");
+          const sec = Math.max(1, Math.round((Date.now() - (thinkStartMs || Date.now())) / 1000));
+          if (lEl) lEl.textContent = `Thinking for ${sec}s`;
+        }, 1000);
+      }
+      const labelEl = thoughtBoxEl.querySelector(".ai-thought-label");
+      const bodyEl = thoughtBoxEl.querySelector(".ai-thought-body");
+      if (parsed.inThink) {
+        thoughtBoxEl.classList.add("is-thinking");
+        const sec = Math.max(1, Math.round((Date.now() - (thinkStartMs || Date.now())) / 1000));
+        if (labelEl) labelEl.textContent = `Thinking for ${sec}s`;
       } else {
-        liveBodyEl = document.createElement("div");
-        thinkingEl.appendChild(liveBodyEl);
+        if (!thinkEndMs) {
+          thinkEndMs = Date.now();
+          stopThinkTicker();
+          if (!userToggledThought) {
+            thoughtBoxEl.open = false; // Otomatis menutup rapi begitu mulai menjawab
+          }
+        }
+        thoughtBoxEl.classList.remove("is-thinking");
+        const sec = Math.max(1, Math.round((thinkEndMs - (thinkStartMs || thinkEndMs)) / 1000));
+        if (labelEl) labelEl.textContent = `Thought for ${sec}s`;
+      }
+      if (bodyEl) {
+        bodyEl.textContent = parsed.thought.trim().replace(/\n{3,}/g, "\n\n");
+        bodyEl.scrollTop = bodyEl.scrollHeight;
       }
     }
-    streamedText += chunk;
-    voiceSession?.pushTextToken(chunk);
-    liveBodyEl.innerHTML = `${formatSimpleMarkdown(streamedText)}<span class="ai-caret"></span>`;
+
+    if (!parsed.inThink) {
+      voiceSession?.pushTextToken(chunk.replace(/<\/?think>/gi, ""));
+      if (answerBodyEl) {
+        answerBodyEl.innerHTML = parsed.answer
+          ? `${formatSimpleMarkdown(parsed.answer)}<span class="ai-caret"></span>`
+          : `<span class="ai-caret"></span>`;
+      }
+    }
+    const nowMs = Date.now();
+    if (nowMs - lastGraphSyncMs >= 320) {
+      lastGraphSyncMs = nowMs;
+      syncLiveReasoningGraph(message, parsed.thought, parsed.answer, true);
+    }
     if (stream) stream.scrollTop = stream.scrollHeight;
   };
 
@@ -2680,10 +3134,12 @@ async function handleChatPrompt(rawMessage) {
         history: chatHistory.slice(-8),
         enableAiForFiles,
         streamVoice: Boolean(voiceSession?.useOfflineWav),
+        enableThinking: Boolean(chatThinkingEnabled && !autoSpeakChat),
       },
       onTokenChunk,
       (wavB64) => voiceSession?.pushAudioBase64(wavB64)
     );
+    stopThinkTicker();
     voiceSession?.finishStream();
     if (autoSpeakChat && !streamedText.trim() && res.reply) {
       speakText(res.reply);
@@ -2699,9 +3155,25 @@ async function handleChatPrompt(rawMessage) {
     }
     chatHistory.push({ role: "assistant", content: historyContent.slice(0, 3800) });
 
-    // Jika token sudah di-stream langsung dari Qwen 1.5B secara real-time, finalisasi di bubble yang sama!
+    // Jika token sudah di-stream langsung dari model lokal secara real-time, finalisasi di bubble yang sama!
     if (liveBodyEl && !res.attachment) {
-      liveBodyEl.innerHTML = formatSimpleMarkdown(res.reply);
+      if (res.thinking) {
+        if (!thoughtBoxEl) {
+          thoughtBoxEl = createThoughtDetailsElement();
+          liveBodyEl.insertBefore(thoughtBoxEl, answerBodyEl);
+        }
+        thoughtBoxEl.classList.remove("is-thinking");
+        const labelEl = thoughtBoxEl.querySelector(".ai-thought-label");
+        const bodyEl = thoughtBoxEl.querySelector(".ai-thought-body");
+        if (labelEl) labelEl.textContent = `Thought for ${res.thinkingDurationSec || 1}s`;
+        if (bodyEl) bodyEl.textContent = String(res.thinking).trim().replace(/\n{3,}/g, "\n\n");
+      } else if (thoughtBoxEl) {
+        thoughtBoxEl.remove();
+      }
+      if (answerBodyEl) {
+        answerBodyEl.innerHTML = formatSimpleMarkdown(res.reply);
+      }
+      syncLiveReasoningGraph(message, res.thinking || "", res.reply || "", false);
       thinkingEl.classList.remove("typing");
       attachAssistantActions(thinkingEl, res.reply, stream);
       return;
@@ -2769,7 +3241,7 @@ async function runQuickOrganize() {
 }
 
 async function runQuickHygiene() {
-  showActiveCapsule("Memindai Duplikat SHA-256...", "Checking duplicates & old installers");
+  showActiveCapsule("Mencari File Kembar...", "Memeriksa file duplikat & installer lama");
   try {
     const data = await rpc("planHygiene");
     openInspectorWithPlan(data.plan, data.sandboxRoot, "Quarantine Dry-Run");
@@ -2843,11 +3315,11 @@ async function runExtractTodoClipboard() {
 
 async function applyActivePlan() {
   if (!activePlan || activePlan.operations.length === 0) return;
-  showActiveCapsule("Menerapkan Perubahan...", "Computing SHA-256 & audit log");
+  showActiveCapsule("Menerapkan Perubahan...", "Menyimpan catatan riwayat aman");
   try {
     const res = await rpc("executePlan", { planId: activePlan.planId, confirmToken: "CONFIRM_EXECUTE" });
     activePlan = null;
-    showToast(`Applied ${res.executedCount} ops • SHA-256 logged`, "ok");
+    showToast(`Berhasil menerapkan ${res.executedCount} perubahan • Bisa dibatalkan di Riwayat Aksi`, "ok");
     await refreshStatus();
     setIslandState("idle");
   } catch (err) {
@@ -3110,6 +3582,7 @@ async function processLiveVoicePrompt(rawSpoken) {
         history: chatHistory.slice(-8),
         enableAiForFiles: document.getElementById("chk-ai-docs")?.checked ?? false,
         streamVoice: Boolean(voiceSession.useOfflineWav),
+        enableThinking: false,
       },
       (chunk) => {
         if (!liveVoiceActive) return;
@@ -3317,8 +3790,19 @@ function listenOnceForLiveVoice(promptLabel = '"Silakan bicara..."') {
           if (liveVoiceActive && !committed) listenOnceForLiveVoice(promptLabel);
         }, 350);
       }
+    } else if (ev.error === "network" && liveVoiceNetworkRetries < 2) {
+      liveVoiceNetworkRetries += 1;
+      setTimeout(() => {
+        if (liveVoiceActive && !committed) listenOnceForLiveVoice(promptLabel);
+      }, 650);
     } else {
-      showToast(`Mic error: ${ev.error}`, "err");
+      const friendlyErr =
+        ev.error === "network"
+          ? "Layanan Speech-to-Text butuh koneksi internet stabil (atau diblokir WebView/VPN)."
+          : ev.error === "not-allowed"
+            ? "Izin mikrofon ditolak — aktifkan izin mic untuk aiku di Windows Settings."
+            : `Mic error: ${ev.error}`;
+      showToast(friendlyErr, "err");
       stopLiveVoice(true);
     }
   };
@@ -3326,14 +3810,112 @@ function listenOnceForLiveVoice(promptLabel = '"Silakan bicara..."') {
   recognition.start();
 }
 
+let liveVoiceNetworkRetries = 0;
+
 function startVoiceInput() {
   if (liveVoiceActive) {
     stopLiveVoice(true);
     return;
   }
+  const hadWakeWord = Boolean(wakeWordRecognition);
   stopWakeWordListener();
   liveVoiceActive = true;
-  listenOnceForLiveVoice();
+  liveVoiceNetworkRetries = 0;
+  if (hadWakeWord) {
+    // Beri jeda singkat agar WebView2 melepas sesi wake-word sebelum membuka sesi Live Voice
+    setTimeout(() => {
+      if (liveVoiceActive) listenOnceForLiveVoice();
+    }, 180);
+  } else {
+    listenOnceForLiveVoice();
+  }
+}
+
+let wallpaperGraphEnabled = localStorage.getItem("aiku_wallpaper_graph") === "1";
+
+function syncLiveReasoningGraph() {
+  // Data percakapan lokal otomatis masuk ke Unified AI Memory Hub (worker.ts) dan tampil di Live Wallpaper Graph.
+}
+
+function initGraphViewPanel() {
+  const toggleBtn = document.getElementById("btn-palette-graph");
+  if (!toggleBtn) return;
+
+  const syncBtnVisual = (active) => {
+    wallpaperGraphEnabled = Boolean(active);
+    toggleBtn.classList.toggle("active", wallpaperGraphEnabled);
+    toggleBtn.dataset.tip = wallpaperGraphEnabled
+      ? "Live Wallpaper Graph: AKTIF (Klik untuk matikan)"
+      : "Live Wallpaper Graph: NONAKTIF (Klik untuk tampilkan di wallpaper laptop)";
+  };
+
+  const applyWallpaperState = async (enable, silent = false) => {
+    try {
+      if (typeof invoke === "function") {
+        const res = await invoke("set_wallpaper_graph_enabled", { enabled: enable });
+        syncBtnVisual(Boolean(res));
+        localStorage.setItem("aiku_wallpaper_graph", res ? "1" : "0");
+        if (res) {
+          void rpc("syncAntigravityMemory").catch(() => {});
+        }
+        if (!silent) {
+          showToast(
+            res
+              ? "Live Wallpaper Graph aktif! Semua AI (Lokal, Antigravity, Gemini) terhubung."
+              : "Live Wallpaper Graph dimatikan.",
+            "ok"
+          );
+        }
+      } else {
+        const resp = await fetch("/api/wallpaper-toggle", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-AiKu-Token": getSessionToken(),
+          },
+          body: JSON.stringify({ enabled: enable }),
+        });
+        const data = await resp.json();
+        const active = Boolean(data?.enabled);
+        syncBtnVisual(active);
+        localStorage.setItem("aiku_wallpaper_graph", active ? "1" : "0");
+        if (active) {
+          void rpc("syncAntigravityMemory").catch(() => {});
+        }
+        if (!silent) {
+          showToast(
+            active
+              ? "Live Wallpaper Graph aktif di desktop! (Lokal + Antigravity + Gemini)"
+              : "Live Wallpaper Graph dimatikan.",
+            "ok"
+          );
+        }
+      }
+    } catch (err) {
+      showToast(`Gagal mengatur Live Wallpaper: ${err}`, "err");
+    }
+  };
+
+  toggleBtn.addEventListener("click", () => {
+    void applyWallpaperState(!wallpaperGraphEnabled, false);
+  });
+
+  // Pulihkan status wallpaper tersimpan saat startup
+  if (typeof invoke === "function") {
+    void invoke("get_wallpaper_graph_status")
+      .then((running) => {
+        if (running) {
+          syncBtnVisual(true);
+        } else if (wallpaperGraphEnabled) {
+          void applyWallpaperState(true, true);
+        } else {
+          syncBtnVisual(false);
+        }
+      })
+      .catch(() => syncBtnVisual(false));
+  } else {
+    syncBtnVisual(false);
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -3473,6 +4055,22 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     void handleChatPrompt(val);
   });
+  const thinkToggleBtn = document.getElementById("btn-palette-think");
+  if (thinkToggleBtn) {
+    thinkToggleBtn.classList.toggle("active", chatThinkingEnabled);
+    thinkToggleBtn.addEventListener("click", () => {
+      chatThinkingEnabled = !chatThinkingEnabled;
+      localStorage.setItem("aiku_chat_thinking", chatThinkingEnabled ? "1" : "0");
+      thinkToggleBtn.classList.toggle("active", chatThinkingEnabled);
+      showToast(
+        chatThinkingEnabled ? "Mode Thinking Chat: ON" : "Mode Thinking Chat: OFF",
+        "info",
+        chatThinkingEnabled
+          ? "Berpikir mendalam aktif di Chat (tetap OFF saat Voice)"
+          : "Jawaban langsung cepat tanpa jeda thinking"
+      );
+    });
+  }
   const ttsToggleBtn = document.getElementById("btn-palette-tts");
   if (ttsToggleBtn) {
     ttsToggleBtn.classList.toggle("active", autoSpeakChat);
@@ -3721,6 +4319,37 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("btn-voice-record")?.addEventListener("click", () => {
     void toggleVoiceSampleRecording();
+  });
+
+  document.getElementById("btn-skill-upload")?.addEventListener("click", () => {
+    document.getElementById("skill-file-input")?.click();
+  });
+
+  document.getElementById("skill-file-input")?.addEventListener("change", async (ev) => {
+    const input = ev.target;
+    const files = Array.from(input?.files ?? []);
+    if (files.length === 0) return;
+    try {
+      let latestSkills = null;
+      for (const file of files) {
+        const content = await file.text();
+        const res = await rpc("uploadSkill", { filename: file.name, content });
+        latestSkills = res.skills;
+      }
+      if (latestSkills) {
+        renderSkillsList(latestSkills);
+      }
+      showToast(
+        files.length === 1
+          ? `Skill "${files[0].name}" berhasil dipasang!`
+          : `${files.length} file SKILL.md berhasil dipasang!`,
+        "ok"
+      );
+    } catch (err) {
+      showToast(`Gagal upload SKILL.md: ${err}`, "err");
+    } finally {
+      input.value = "";
+    }
   });
 
   document.getElementById("btn-voice-upload")?.addEventListener("click", () => {
@@ -4016,7 +4645,118 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Aktifkan fisika karet elastis (tarik tepian Dynamic Island!)
+function initModernHoverTooltips() {
+  const tipEl = document.createElement("div");
+  tipEl.id = "aiku-tooltip";
+  tipEl.className = "aiku-tooltip";
+  tipEl.setAttribute("role", "tooltip");
+  document.body.appendChild(tipEl);
+
+  let activeTarget = null;
+  let showTimer = null;
+
+  const hideTip = () => {
+    if (showTimer) {
+      clearTimeout(showTimer);
+      showTimer = null;
+    }
+    activeTarget = null;
+    tipEl.classList.remove("visible");
+  };
+
+  const positionAndShow = (target, text) => {
+    tipEl.textContent = text;
+    tipEl.style.left = "0px";
+    tipEl.style.top = "0px";
+    const rect = target.getBoundingClientRect();
+    const tipRect = tipEl.getBoundingClientRect();
+    const pad = 8;
+
+    let left = rect.left + rect.width / 2 - tipRect.width / 2;
+    left = Math.max(pad, Math.min(window.innerWidth - tipRect.width - pad, left));
+
+    let top = rect.bottom + 7;
+    if (top + tipRect.height + pad > window.innerHeight) {
+      top = Math.max(pad, rect.top - tipRect.height - 7);
+    }
+
+    tipEl.style.left = `${Math.round(left)}px`;
+    tipEl.style.top = `${Math.round(top)}px`;
+    tipEl.classList.add("visible");
+  };
+
+  document.addEventListener(
+    "pointerover",
+    (e) => {
+      const el = e.target instanceof Element ? e.target.closest("[data-tip], [title]") : null;
+      if (!el || el === activeTarget) return;
+
+      // Ubah title bawaan browser menjadi data-tip agar tooltip kuning standar tidak bertumpuk
+      if (!el.hasAttribute("data-tip") && el.hasAttribute("title")) {
+        const t = el.getAttribute("title") || "";
+        if (t.trim()) {
+          el.setAttribute("data-tip", t.trim());
+          el.removeAttribute("title");
+        }
+      }
+
+      const text = el.getAttribute("data-tip");
+      if (!text) return;
+
+      hideTip();
+      activeTarget = el;
+      showTimer = setTimeout(() => {
+        if (activeTarget === el && document.contains(el)) {
+          positionAndShow(el, text);
+        }
+      }, 140);
+    },
+    true
+  );
+
+  document.addEventListener(
+    "pointerout",
+    (e) => {
+      if (!activeTarget) return;
+      const related = e.relatedTarget instanceof Element ? e.relatedTarget : null;
+      if (!related || !activeTarget.contains(related)) {
+        hideTip();
+      }
+    },
+    true
+  );
+
+  document.addEventListener("pointerdown", hideTip, true);
+  window.addEventListener("blur", hideTip);
+}
+
+  // Graph View (Live AI Reasoning + Workspace File Graph — InfraNodus Style)
+  initGraphViewPanel();
+
+  // Delegated Copy button handler untuk seluruh Code Output block di chat
+  document.getElementById("palette-chat-stream")?.addEventListener("click", async (e) => {
+    const copyBtn = e.target?.closest?.(".ai-code-copy-btn");
+    if (!copyBtn) return;
+    e.stopPropagation();
+    const wrap = copyBtn.closest(".ai-code-wrap");
+    const codeText = wrap?.querySelector("pre code")?.textContent ?? "";
+    if (!codeText) return;
+    try {
+      await navigator.clipboard.writeText(codeText);
+      const label = copyBtn.querySelector("span");
+      copyBtn.classList.add("copied");
+      if (label) label.textContent = "Tersalin";
+      setTimeout(() => {
+        copyBtn.classList.remove("copied");
+        if (label) label.textContent = "Salin";
+      }, 1600);
+    } catch {
+      showToast("Gagal menyalin kode ke clipboard.", "err");
+    }
+  });
+
+  // Aktifkan fisika karet elastis (tarik tepian Dynamic Island!) & Tooltip Hover Modern
+  initModernHoverTooltips();
   initElasticJellyPhysics();
 
   // Terapkan gaya chat tersimpan (default / gemini), render shortcut hover & mulai di State 1 (Idle Pill)

@@ -52,6 +52,7 @@ export interface LlmInferenceClient {
     sandboxContextSummary?: string;
     liveContext?: string;
     maxTokensOverride?: number;
+    enableThinking?: boolean;
     stateless?: boolean;
     onToken?: (chunk: string) => void;
   }): Promise<string>;
@@ -104,7 +105,14 @@ export class LocalLlamaEngine implements LlmInferenceClient {
   }
 
   public isLargeCapableModel(): boolean {
-    return /\b(3b|4b|7b|8b|gemma-2-2b)\b/i.test(this.llmConfig.modelFileName);
+    return /\b(3b|4b|7b|8b|gemma-2-2b|gemma-3-4b|qwen3-4b)\b/i.test(this.llmConfig.modelFileName);
+  }
+
+  public isQwen3HybridModel(): boolean {
+    return (
+      /qwen3/i.test(this.llmConfig.modelFileName) &&
+      !/instruct-2507|thinking-2507/i.test(this.llmConfig.modelFileName)
+    );
   }
 
   public async warmupModel(): Promise<boolean> {
@@ -318,6 +326,7 @@ export class LocalLlamaEngine implements LlmInferenceClient {
     sandboxContextSummary?: string;
     liveContext?: string;
     maxTokensOverride?: number;
+    enableThinking?: boolean;
     stateless?: boolean;
     onToken?: (chunk: string) => void;
   }): Promise<string> {
@@ -338,6 +347,7 @@ export class LocalLlamaEngine implements LlmInferenceClient {
     }
 
     const is3B = this.isLargeCapableModel();
+    const isQwen3Hybrid = this.isQwen3HybridModel();
     const cleanMsg = input.message.trim();
     let priorTurns = input.history;
     if (
@@ -367,16 +377,25 @@ export class LocalLlamaEngine implements LlmInferenceClient {
     }
 
     const maxInputChars = is3B ? 2400 : 900;
-    const promptForModel = input.liveContext
+    let promptForModel = input.liveContext
       ? `[INFO: ${input.liveContext}]\n${cleanMsg.slice(0, maxInputChars)}`
       : cleanMsg.slice(0, maxInputChars);
 
-    const defaultMaxTokens = is3B ? 1100 : 240;
+    // Qwen 3 Hybrid: /no_think untuk obrolan & suara cepat (~0.6s), /think otomatis untuk koding & analisis mendalam!
+    if (isQwen3Hybrid) {
+      promptForModel = `${promptForModel}\n${input.enableThinking ? "/think" : "/no_think"}`;
+    }
+
+    const defaultMaxTokens = is3B ? (input.enableThinking ? 1600 : 1100) : 240;
     const effectiveMaxTokens = input.maxTokensOverride ?? defaultMaxTokens;
 
     try {
+      let thoughtBuffer = "";
+      let thoughtOpen = false;
+      let thoughtClosed = false;
+
       const response = await this.chatSession.prompt(promptForModel, {
-        temperature: 0.35,
+        temperature: input.enableThinking ? 0.55 : 0.35,
         topK: 25,
         topP: 0.88,
         minP: 0.05,
@@ -385,19 +404,44 @@ export class LocalLlamaEngine implements LlmInferenceClient {
           lastTokens: 48,
         },
         maxTokens: effectiveMaxTokens,
-        ...(input.onToken
-          ? {
-              onTextChunk: (chunk: string) => {
-                if (chunk.length > 0) {
-                  input.onToken?.(chunk);
-                }
-              },
+        onResponseChunk: (chunk) => {
+          if (chunk.type === "segment" && chunk.segmentType === "thought") {
+            if (!thoughtOpen) {
+              thoughtOpen = true;
+              input.onToken?.("<think>");
             }
-          : {}),
+            if (chunk.text.length > 0) {
+              thoughtBuffer += chunk.text;
+              input.onToken?.(chunk.text);
+            }
+            if (chunk.segmentEndTime && !thoughtClosed) {
+              thoughtClosed = true;
+              input.onToken?.("</think>");
+            }
+            return;
+          }
+
+          if (chunk.type === undefined) {
+            if (thoughtOpen && !thoughtClosed) {
+              thoughtClosed = true;
+              input.onToken?.("</think>");
+            }
+            if (chunk.text.length > 0) {
+              input.onToken?.(chunk.text);
+            }
+          }
+        },
       });
 
+      if (thoughtOpen && !thoughtClosed) {
+        thoughtClosed = true;
+        input.onToken?.("</think>");
+      }
+
       this.sessionTurnCount += 1;
-      return response.trim();
+      const cleanMain = response.trim();
+      const cleanThought = thoughtBuffer.trim();
+      return cleanThought.length > 0 ? `<think>${cleanThought}</think>\n${cleanMain}` : cleanMain;
     } finally {
       this.scheduleIdleUnload();
     }
@@ -426,7 +470,11 @@ export class LocalLlamaEngine implements LlmInferenceClient {
         ? new LlamaGrammar(this.cachedLlama, { grammar: params.grammarText })
         : undefined;
 
-      const response = await session.prompt(params.userPrompt, {
+      const finalUserPrompt = this.isQwen3HybridModel()
+        ? `${params.userPrompt}\n/no_think`
+        : params.userPrompt;
+
+      const response = await session.prompt(finalUserPrompt, {
         ...(grammar ? { grammar } : {}),
         temperature: params.grammarText ? 0.1 : 0.3,
         topK: 20,
@@ -435,7 +483,7 @@ export class LocalLlamaEngine implements LlmInferenceClient {
         maxTokens: params.maxTokens,
       });
 
-      return response.trim();
+      return response.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
     } finally {
       session.dispose();
       await sequence.eraseContextTokenRanges([{ start: 0, end: sequence.nextTokenIndex }]);

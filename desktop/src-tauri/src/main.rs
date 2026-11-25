@@ -8,7 +8,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, State, WindowEvent};
+use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -24,9 +24,109 @@ struct WinPoint {
 }
 
 #[cfg(target_os = "windows")]
+type Hwnd = *mut std::ffi::c_void;
+
+#[cfg(target_os = "windows")]
 extern "system" {
     fn GetAsyncKeyState(vkey: i32) -> i16;
     fn GetCursorPos(lp_point: *mut WinPoint) -> i32;
+    fn FindWindowW(lp_class_name: *const u16, lp_window_name: *const u16) -> Hwnd;
+    fn FindWindowExW(
+        hwnd_parent: Hwnd,
+        hwnd_child_after: Hwnd,
+        lpsz_class: *const u16,
+        lpsz_window: *const u16,
+    ) -> Hwnd;
+    fn SendMessageTimeoutW(
+        hwnd: Hwnd,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+        fu_flags: u32,
+        u_timeout: u32,
+        lpdw_result: *mut usize,
+    ) -> isize;
+    fn EnumWindows(
+        lp_enum_func: extern "system" fn(Hwnd, isize) -> i32,
+        lparam: isize,
+    ) -> i32;
+    fn SetParent(hwnd_child: Hwnd, hwnd_new_parent: Hwnd) -> Hwnd;
+    fn SetWindowPos(
+        hwnd: Hwnd,
+        hwnd_insert_after: Hwnd,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        u_flags: u32,
+    ) -> i32;
+    fn GetSystemMetrics(n_index: i32) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+fn to_wide_null(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+extern "system" fn enum_find_workerw(top_handle: Hwnd, lparam: isize) -> i32 {
+    unsafe {
+        let def_view_cls = to_wide_null("SHELLDLL_DefView");
+        let shell_view = FindWindowExW(top_handle, std::ptr::null_mut(), def_view_cls.as_ptr(), std::ptr::null());
+        if !shell_view.is_null() {
+            let workerw_cls = to_wide_null("WorkerW");
+            let workerw = FindWindowExW(std::ptr::null_mut(), top_handle, workerw_cls.as_ptr(), std::ptr::null());
+            if !workerw.is_null() {
+                let out_ptr = lparam as *mut Hwnd;
+                *out_ptr = workerw;
+                return 0;
+            }
+        }
+        1
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn attach_hwnd_to_desktop_wallpaper(target_hwnd: Hwnd) -> Result<(), String> {
+    unsafe {
+        let progman_cls = to_wide_null("Progman");
+        let progman = FindWindowW(progman_cls.as_ptr(), std::ptr::null());
+        if progman.is_null() {
+            return Err("Progman tidak ditemukan di Windows Desktop.".to_string());
+        }
+
+        // Spawn WorkerW di belakang ikon desktop (teknik standar Windows 10/11)
+        let mut _result: usize = 0;
+        SendMessageTimeoutW(progman, 0x052C, 0xD, 0x1, 0x0000, 1000, &mut _result);
+
+        let mut workerw: Hwnd = std::ptr::null_mut();
+        EnumWindows(enum_find_workerw, (&mut workerw as *mut Hwnd) as isize);
+
+        // Fallback untuk Windows 11 24H2 di mana WorkerW bisa menjadi child langsung Progman
+        if workerw.is_null() {
+            let workerw_cls = to_wide_null("WorkerW");
+            workerw = FindWindowExW(progman, std::ptr::null_mut(), workerw_cls.as_ptr(), std::ptr::null());
+        }
+        if workerw.is_null() {
+            workerw = progman;
+        }
+
+        let screen_w = GetSystemMetrics(0).max(1280);
+        let screen_h = GetSystemMetrics(1).max(720);
+
+        SetParent(target_hwnd, workerw);
+        // SWP_NOZORDER (0x0004) | SWP_NOACTIVATE (0x0010) | SWP_SHOWWINDOW (0x0040)
+        SetWindowPos(
+            target_hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            screen_w,
+            screen_h,
+            0x0004 | 0x0010 | 0x0040,
+        );
+    }
+    Ok(())
 }
 
 const CANVAS_WIDTH: f64 = 960.0;
@@ -550,6 +650,69 @@ fn set_global_hotkey(state: State<'_, AppState>, hotkey: String) -> Result<Strin
 }
 
 #[tauri::command]
+fn set_wallpaper_graph_enabled(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    if !enabled {
+        if let Some(win) = app.get_webview_window("wallpaper") {
+            let _ = win.close();
+        }
+        return Ok(false);
+    }
+
+    if let Some(existing) = app.get_webview_window("wallpaper") {
+        let _ = existing.show();
+        return Ok(true);
+    }
+
+    let (w, h) = {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            (
+                GetSystemMetrics(0).max(1280) as f64,
+                GetSystemMetrics(1).max(720) as f64,
+            )
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            (1920.0, 1080.0)
+        }
+    };
+
+    let win = WebviewWindowBuilder::new(
+        &app,
+        "wallpaper",
+        WebviewUrl::App("wallpaper.html".into()),
+    )
+    .title("aiku Live Wallpaper Graph")
+    .inner_size(w, h)
+    .position(0.0, 0.0)
+    .decorations(false)
+    .resizable(false)
+    .skip_taskbar(true)
+    .always_on_top(false)
+    .focused(false)
+    .shadow(false)
+    .build()
+    .map_err(|e| format!("Gagal membuat jendela Wallpaper Graph: {e}"))?;
+
+    let _ = win.set_ignore_cursor_events(true);
+
+    #[cfg(target_os = "windows")]
+    {
+        let raw_hwnd = win
+            .hwnd()
+            .map_err(|e| format!("Gagal membaca HWND wallpaper: {e}"))?;
+        attach_hwnd_to_desktop_wallpaper(raw_hwnd.0 as Hwnd)?;
+    }
+
+    Ok(true)
+}
+
+#[tauri::command]
+fn get_wallpaper_graph_status(app: tauri::AppHandle) -> bool {
+    app.get_webview_window("wallpaper").is_some()
+}
+
+#[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
@@ -593,6 +756,8 @@ fn main() {
             resize_island,
             update_hit_box,
             set_global_hotkey,
+            set_wallpaper_graph_enabled,
+            get_wallpaper_graph_status,
             quit_app
         ])
         .run(tauri::generate_context!())
