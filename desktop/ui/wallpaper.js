@@ -25,6 +25,52 @@
   let clusters = [];
   let lastVersion = -1;
   let simAlpha = 1.0; // D3/Obsidian-style cooling: mulai 1.0 -> tenang sempurna ke 0.0!
+  let animTime = 0;
+  let orbitAngle = 0;
+
+  // Motion & Animation Customizer State (persisted in localStorage)
+  const MOTION_STORAGE_KEY = "aiku_wallpaper_motion_v1";
+  let motionCfg = {
+    mode: "still", // "still" | "float" | "orbit" | "pulse"
+    speed: 0.8,
+    spread: 1.0,
+    edgeAlpha: 0.13,
+  };
+  try {
+    const saved = JSON.parse(localStorage.getItem(MOTION_STORAGE_KEY) || "null");
+    if (saved && typeof saved === "object") {
+      if (["still", "float", "orbit", "pulse"].includes(saved.mode)) motionCfg.mode = saved.mode;
+      if (Number.isFinite(Number(saved.speed))) motionCfg.speed = Math.max(0.2, Math.min(2.0, Number(saved.speed)));
+      if (Number.isFinite(Number(saved.spread))) motionCfg.spread = Math.max(0.65, Math.min(1.6, Number(saved.spread)));
+      if (Number.isFinite(Number(saved.edgeAlpha))) motionCfg.edgeAlpha = Math.max(0.04, Math.min(0.38, Number(saved.edgeAlpha)));
+    }
+  } catch {}
+
+  function saveMotionCfg() {
+    try {
+      localStorage.setItem(MOTION_STORAGE_KEY, JSON.stringify(motionCfg));
+    } catch {}
+  }
+
+  function getRenderPos(n, idx) {
+    let x = n.x;
+    let y = n.y;
+    if (motionCfg.mode === "float" && n !== draggedNode) {
+      const amp = 4.5 + (idx % 3) * 1.4;
+      x += Math.sin(animTime * 0.75 + idx * 1.37) * amp;
+      y += Math.cos(animTime * 0.65 + idx * 1.13) * amp;
+    } else if (motionCfg.mode === "orbit" && n !== draggedNode) {
+      const cx = width / 2;
+      const cy = height / 2;
+      const dx = x - cx;
+      const dy = y - cy;
+      const cosA = Math.cos(orbitAngle);
+      const sinA = Math.sin(orbitAngle);
+      x = cx + dx * cosA - dy * sinA;
+      y = cy + dx * sinA + dy * cosA;
+    }
+    return { x, y };
+  }
 
   // Camera transform (Pan & Zoom)
   let camX = 0;
@@ -199,8 +245,9 @@
   function findNodeAtWorld(wx, wy) {
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
+      const pos = getRenderPos(n, i);
       const hitR = Math.max(7 / zoom, n.radius + 4 / zoom);
-      if (Math.hypot(wx - n.x, wy - n.y) <= hitR) return n;
+      if (Math.hypot(wx - pos.x, wy - pos.y) <= hitR) return n;
     }
     return null;
   }
@@ -428,9 +475,10 @@
     if (!isPreSettle && simAlpha < 0.004 && !draggedNode) return;
 
     const alpha = isPreSettle ? 0.65 : simAlpha;
+    const spread = motionCfg.spread || 1.0;
     const cx = width / 2;
     const cy = height / 2;
-    const galaxyR = Math.min(width, height) * 0.35;
+    const galaxyR = Math.min(width, height) * 0.35 * spread;
 
     // 1. Repulsion lembut dengan jarak aman minimum (anti ledakan/getar!)
     for (let i = 0; i < nodes.length; i++) {
@@ -440,10 +488,10 @@
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const distSq = dx * dx + dy * dy;
-        if (distSq > 22000) continue;
+        if (distSq > 26000 * spread) continue;
         const safeDistSq = Math.max(220, distSq);
         const dist = Math.sqrt(safeDistSq);
-        const rep = ((a.cluster === b.cluster ? 95 : 165) / safeDistSq) * alpha;
+        const rep = ((a.cluster === b.cluster ? 95 : 165) * spread / safeDistSq) * alpha;
         const fx = (dx / dist) * rep;
         const fy = (dy / dist) * rep;
         a.vx -= fx;
@@ -460,7 +508,7 @@
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const target = a.cluster === b.cluster ? 52 : 96;
+      const target = (a.cluster === b.cluster ? 52 : 96) * spread;
       const f = (dist - target) * 0.0065 * alpha;
       const fx = (dx / dist) * f;
       const fy = (dy / dist) * f;
@@ -542,43 +590,70 @@
       }
     }
 
+    const renderPosMap = new Map();
+    for (let i = 0; i < nodes.length; i++) {
+      renderPosMap.set(nodes[i].id, getRenderPos(nodes[i], i));
+    }
+
     // 1. Ultra-Fine Straight Hairline Edges (Obsidian Vault signature look)
-    for (const e of edges) {
+    for (let ei = 0; ei < edges.length; ei++) {
+      const e = edges[ei];
+      const pA = renderPosMap.get(e.source.id) || e.source;
+      const pB = renderPosMap.get(e.target.id) || e.target;
       const isFocus = focusNode && (e.source.id === focusNode.id || e.target.id === focusNode.id);
       const dimmed = focusNode && !isFocus;
       ctx.beginPath();
-      ctx.moveTo(e.source.x, e.source.y);
-      ctx.lineTo(e.target.x, e.target.y);
+      ctx.moveTo(pA.x, pA.y);
+      ctx.lineTo(pB.x, pB.y);
       if (isFocus) {
         ctx.strokeStyle = focusNode.color;
         ctx.globalAlpha = 0.65;
         ctx.lineWidth = 1.1 / zoom;
       } else {
         ctx.strokeStyle = "#d4d4dc";
-        ctx.globalAlpha = dimmed ? 0.03 : 0.13;
+        ctx.globalAlpha = dimmed ? 0.03 : motionCfg.edgeAlpha;
         ctx.lineWidth = 0.65 / zoom;
       }
       ctx.stroke();
+
+      // Mode "Aliran Sinyal" (Pulse): percikan sinyal saraf AI meluncur halus sepanjang koneksi
+      if (motionCfg.mode === "pulse" && !dimmed && ei % 2 === 0) {
+        const t = (animTime * 0.24 + ei * 0.173) % 1;
+        const sx = pA.x + (pB.x - pA.x) * t;
+        const sy = pA.y + (pB.y - pA.y) * t;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 1.8 / Math.sqrt(zoom), 0, Math.PI * 2);
+        ctx.fillStyle = e.source.color;
+        ctx.globalAlpha = 0.78;
+        ctx.fill();
+      }
     }
     ctx.globalAlpha = 1;
 
     // 2. Crisp Colored Nodes (Coral / Indigo / Yellow / Silver / Slate)
-    for (const n of nodes) {
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      const pos = renderPosMap.get(n.id) || n;
       const isMain = focusNode && focusNode.id === n.id;
       const isNeighbor = focusNode && focusSet.has(n.id);
       const dimmed = focusNode && !isNeighbor;
 
-      if (isMain) {
+      const pulseR =
+        motionCfg.mode === "pulse" && n.rank <= 10
+          ? Math.sin(animTime * 2.2 + i) * 1.4 + 1.4
+          : 0;
+
+      if (isMain || pulseR > 0.2) {
         ctx.beginPath();
-        ctx.arc(n.x, n.y, n.radius + 6 / zoom, 0, Math.PI * 2);
+        ctx.arc(pos.x, pos.y, n.radius + (isMain ? 6 : 3.5 + pulseR) / zoom, 0, Math.PI * 2);
         ctx.fillStyle = n.color;
-        ctx.globalAlpha = 0.24;
+        ctx.globalAlpha = isMain ? 0.24 : 0.14;
         ctx.fill();
         ctx.globalAlpha = 1;
       }
 
       ctx.beginPath();
-      ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
+      ctx.arc(pos.x, pos.y, n.radius, 0, Math.PI * 2);
       ctx.fillStyle = n.color;
       ctx.globalAlpha = dimmed ? 0.18 : 0.95;
       ctx.fill();
@@ -594,7 +669,9 @@
     // 3. Clean Labels — hidden at rest (artwork look!), smoothly revealed on hover / selection / zoom > 1.45x
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
-    for (const n of nodes) {
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      const pos = renderPosMap.get(n.id) || n;
       const isMain = focusNode && focusNode.id === n.id;
       const isNeighbor = focusNode && focusSet.has(n.id);
       const showByZoom = zoom >= 1.45 && (n.rank <= 32 || zoom >= 2.1);
@@ -602,8 +679,8 @@
 
       const fontSize = (isMain ? 12.5 : 10.2) / Math.pow(zoom, 0.45);
       ctx.font = `${isMain ? "600" : "400"} ${fontSize}px "Segoe UI Variable Text", Inter, sans-serif`;
-      const tx = n.x + n.radius + 5 / zoom;
-      const ty = n.y;
+      const tx = pos.x + n.radius + 5 / zoom;
+      const ty = pos.y;
 
       ctx.fillStyle = isMain ? "#ffffff" : "rgba(228, 228, 231, 0.82)";
       ctx.fillText(n.label, tx, ty);
@@ -612,8 +689,68 @@
     ctx.restore();
   }
 
+  // Wire Motion & Animation Customizer UI
+  const motionModal = document.getElementById("motion-modal");
+  const slSpeed = document.getElementById("sl-speed");
+  const slSpread = document.getElementById("sl-spread");
+  const slEdge = document.getElementById("sl-edge");
+  const valSpeed = document.getElementById("val-speed");
+  const valSpread = document.getElementById("val-spread");
+  const valEdge = document.getElementById("val-edge");
+
+  function syncMotionUi() {
+    document.querySelectorAll(".motion-mode-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.mode === motionCfg.mode);
+    });
+    if (slSpeed) slSpeed.value = String(motionCfg.speed);
+    if (slSpread) slSpread.value = String(motionCfg.spread);
+    if (slEdge) slEdge.value = String(motionCfg.edgeAlpha);
+    if (valSpeed) valSpeed.textContent = `${motionCfg.speed.toFixed(1)}x`;
+    if (valSpread) valSpread.textContent = `${motionCfg.spread.toFixed(2)}x`;
+    if (valEdge) valEdge.textContent = `${Math.round(motionCfg.edgeAlpha * 100)}%`;
+  }
+  syncMotionUi();
+
+  document.getElementById("btn-motion-cfg")?.addEventListener("click", () => {
+    if (!motionModal) return;
+    customModal?.classList.add("hidden");
+    motionModal.classList.toggle("hidden");
+  });
+  document.getElementById("mm-close")?.addEventListener("click", () => {
+    motionModal?.classList.add("hidden");
+  });
+  document.getElementById("motion-modes")?.addEventListener("click", (e) => {
+    const btn = e.target?.closest?.(".motion-mode-btn");
+    if (!btn) return;
+    motionCfg.mode = btn.dataset.mode || "still";
+    if (motionCfg.mode !== "orbit") orbitAngle = 0;
+    syncMotionUi();
+    saveMotionCfg();
+  });
+  slSpeed?.addEventListener("input", () => {
+    motionCfg.speed = Number(slSpeed.value) || 0.8;
+    syncMotionUi();
+    saveMotionCfg();
+  });
+  slSpread?.addEventListener("input", () => {
+    motionCfg.spread = Number(slSpread.value) || 1.0;
+    simAlpha = Math.max(simAlpha, 0.45);
+    syncMotionUi();
+    saveMotionCfg();
+  });
+  slEdge?.addEventListener("input", () => {
+    motionCfg.edgeAlpha = Number(slEdge.value) || 0.13;
+    syncMotionUi();
+    saveMotionCfg();
+  });
+
   function loop() {
     if (!document.hidden) {
+      const spd = motionCfg.speed || 0.8;
+      animTime += 0.016 * spd;
+      if (motionCfg.mode === "orbit") {
+        orbitAngle += 0.00085 * spd;
+      }
       stepPhysics(false);
       render();
     }

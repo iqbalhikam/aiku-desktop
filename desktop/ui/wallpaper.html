@@ -264,6 +264,49 @@
         cursor: pointer;
         align-self: flex-start;
       }
+      .motion-modes {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 5px;
+      }
+      .motion-mode-btn {
+        padding: 6px 8px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.04);
+        color: #a1a1aa;
+        font-size: 11px;
+        font-family: inherit;
+        cursor: pointer;
+        transition: all 0.14s ease;
+      }
+      .motion-mode-btn:hover {
+        background: rgba(255, 255, 255, 0.09);
+        color: #f4f4f5;
+      }
+      .motion-mode-btn.active {
+        background: rgba(255, 255, 255, 0.16);
+        border-color: rgba(255, 255, 255, 0.34);
+        color: #ffffff;
+        font-weight: 600;
+      }
+      .motion-slider-row {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .motion-slider-head {
+        display: flex;
+        justify-content: space-between;
+        font-size: 10.5px;
+        color: #a1a1aa;
+        font-family: "JetBrains Mono", Consolas, monospace;
+      }
+      .motion-slider {
+        width: 100%;
+        accent-color: #f4f4f5;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
@@ -302,12 +345,39 @@
       </div>
     </form>
 
-    <!-- Interactive Zoom, Reset & Custom Node Controls -->
+    <!-- Motion & Animation Customizer Popover -->
+    <div id="motion-modal" class="custom-modal hidden">
+      <div class="node-card-head">
+        <span class="cm-title">Animasi &amp; Gerakan Node</span>
+        <button id="mm-close" type="button" class="ctrl-btn" title="Tutup">×</button>
+      </div>
+      <div class="motion-modes" id="motion-modes">
+        <button type="button" class="motion-mode-btn active" data-mode="still">Tenang</button>
+        <button type="button" class="motion-mode-btn" data-mode="float">Mengambang</button>
+        <button type="button" class="motion-mode-btn" data-mode="orbit">Orbit</button>
+        <button type="button" class="motion-mode-btn" data-mode="pulse">Aliran Sinyal</button>
+      </div>
+      <div class="motion-slider-row">
+        <div class="motion-slider-head"><span>Kecepatan</span><span id="val-speed">0.8x</span></div>
+        <input id="sl-speed" class="motion-slider" type="range" min="0.2" max="2.0" step="0.1" value="0.8" />
+      </div>
+      <div class="motion-slider-row">
+        <div class="motion-slider-head"><span>Jarak Node</span><span id="val-spread">1.0x</span></div>
+        <input id="sl-spread" class="motion-slider" type="range" min="0.65" max="1.6" step="0.05" value="1.0" />
+      </div>
+      <div class="motion-slider-row">
+        <div class="motion-slider-head"><span>Kecerahan Garis</span><span id="val-edge">13%</span></div>
+        <input id="sl-edge" class="motion-slider" type="range" min="0.04" max="0.38" step="0.01" value="0.13" />
+      </div>
+    </div>
+
+    <!-- Interactive Zoom, Reset, Custom Node & Animation Controls -->
     <div class="controls">
       <button id="btn-zoom-in" type="button" class="ctrl-btn" title="Perbesar">+</button>
       <button id="btn-zoom-out" type="button" class="ctrl-btn" title="Perkecil">−</button>
       <button id="btn-reset-view" type="button" class="ctrl-btn" title="Reset posisi & zoom">Reset</button>
       <button id="btn-add-node" type="button" class="ctrl-btn" title="Tambah Custom Node baru">+ Node</button>
+      <button id="btn-motion-cfg" type="button" class="ctrl-btn" title="Kustomisasi animasi &amp; gerakan node">Animasi</button>
     </div>
 
     <!-- Minimalist Source Legend HUD -->
