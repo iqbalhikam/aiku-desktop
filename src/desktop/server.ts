@@ -13,8 +13,8 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".json": "application/json; charset=utf-8",
 };
 
-// Izinkan hingga 25 MB untuk unggahan sampel audio WAV Voice Clone lokal (127.0.0.1 only)
-const MAX_BODY_BYTES = 25 * 1024 * 1024;
+// Izinkan hingga 80 MB untuk unggahan sampel WAV Voice Clone, screenshot OCR, dan penggabungan PDF lokal (127.0.0.1 only)
+const MAX_BODY_BYTES = 80 * 1024 * 1024;
 
 function openDesktopWindow(url: string): void {
   if (process.platform === "win32") {
@@ -44,7 +44,7 @@ async function readRequestBody(req: http.IncomingMessage): Promise<string> {
         overflowed = true;
         chunks.length = 0;
         req.resume();
-        reject(new Error("Ukuran sampel audio melebihi batas maksimal 25 MB."));
+        reject(new Error("Ukuran payload lokal melebihi batas maksimal 80 MB."));
         return;
       }
       chunks.push(chunk);

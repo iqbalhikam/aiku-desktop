@@ -90,11 +90,17 @@ describe("Offline Voice Clone DSP & Config Schema", () => {
     expect(cfg.voice.ttsMode).toBe("ava_hd");
     expect(cfg.voice.speed).toBe(1.03);
     expect(cleanTextForSpeech("Halo **Iqbal**! [OPEN_CHROME: https://youtube.com] Diskon 50%.")).toBe(
-      "Halo Iqbal! Diskon 50 persen ."
+      "Halo Iqbal! Diskon 50 persen."
     );
     expect(cleanTextForSpeech("1. Buka aplikasi\n2. Simpan catatan")).toBe(
       "Buka aplikasi. Simpan catatan"
     );
+
+    const smile = String.fromCodePoint(0x1f60a);
+    const rocket = String.fromCodePoint(0x1f680);
+    expect(
+      cleanTextForSpeech(`Halo ${smile}! Siap bantu :) ${rocket} ^_^ Jam 10:30 <3`)
+    ).toBe("Halo! Siap bantu Jam 10:30");
 
     const clauses = splitTextIntoRealtimeSpeechClauses(
       "Halo Iqbal, senang bertemu lagi hari ini! Cuaca sedang cerah, jadi semua pekerjaan kamu sudah siap dijalankan sekarang."

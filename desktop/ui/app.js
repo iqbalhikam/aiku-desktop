@@ -14,6 +14,7 @@ let timerRemainingSec = 0;
 let timerCustomLabel = "";
 const clipboardHistory = [];
 let currentMediaStatus = { active: false };
+let ledgeHub = null;
 let bootGreetingActive = false;
 let latestStatusCache = null;
 let browserSearchMode = false;
@@ -309,8 +310,8 @@ function updateWelcomeCard(status = latestStatusCache, fileCount = null) {
     if (badgeEl) badgeEl.textContent = badgeLabel;
     if (chatIndicatorEl) {
       chatIndicatorEl.textContent = isHybrid
-        ? `Hybrid Active (${shortModel} + Gemini 2.5)`
-        : `Offline Local (${shortModel})`;
+        ? `${shortModel} · Hybrid`
+        : `${shortModel} · Lokal`;
     }
     if (subEl) {
       const folderCount = Array.isArray(status.allowedDirectories) ? status.allowedDirectories.length : 1;
@@ -325,8 +326,11 @@ function syncWelcomeVisibility() {
   const chatToolbar = document.getElementById("chat-toolbar");
   const stream = document.getElementById("palette-chat-stream");
   const inboxPanel = document.getElementById("inbox-panel");
+  const aiPane = document.getElementById("ledge-pane-ai");
   const inboxOpen = inboxPanel && !inboxPanel.classList.contains("hidden");
   const hasMessages = stream && stream.children.length > 0;
+
+  aiPane?.classList.toggle("has-chat", Boolean(hasMessages || inboxOpen));
 
   if (inboxOpen) {
     welcomeCard?.classList.add("hidden");
@@ -340,10 +344,12 @@ function syncWelcomeVisibility() {
     chatToolbar?.classList.remove("hidden");
     stream?.classList.remove("hidden");
   } else {
+    document.getElementById("more-tools-grid")?.classList.add("hidden");
     welcomeCard?.classList.remove("hidden");
     chatToolbar?.classList.add("hidden");
     stream?.classList.add("hidden");
   }
+  trackHitBoxForMs(260);
 }
 
 function formatRelativeTime(ms) {
@@ -528,7 +534,7 @@ function runBootWelcomeAnimation() {
         const t = currentMediaStatus.title;
         idleLabel.textContent = `${t.slice(0, 14)}${t.length > 14 ? "…" : ""}`;
       } else {
-        idleLabel.textContent = latestStatusCache && !latestStatusCache.modelReady ? "Setup AI" : "AI Ready";
+        idleLabel.textContent = latestStatusCache && !latestStatusCache.modelReady ? "Setup AI" : "aiku";
       }
     }
   }, 2400);
@@ -541,6 +547,7 @@ function recordClipboardEntry(text) {
   if (existingIdx !== -1) clipboardHistory.splice(existingIdx, 1);
   clipboardHistory.unshift(clean);
   if (clipboardHistory.length > 10) clipboardHistory.pop();
+  ledgeHub?.recordClip(clean);
 }
 
 function showClipboardHistory() {
@@ -580,6 +587,7 @@ async function pollMediaPlayer(action = "get") {
   try {
     const media = await rpc("mediaControl", { action });
     currentMediaStatus = media;
+    ledgeHub?.updateMediaView(media);
     const bar = document.getElementById("media-bar");
     const idleLabel = document.getElementById("idle-label");
 
@@ -594,7 +602,7 @@ async function pollMediaPlayer(action = "get") {
     } else {
       bar?.classList.add("hidden");
       if (!bootGreetingActive && timerRemainingSec === 0 && idleLabel) {
-        idleLabel.textContent = latestStatusCache && !latestStatusCache.modelReady ? "Setup AI" : "AI Ready";
+        idleLabel.textContent = latestStatusCache && !latestStatusCache.modelReady ? "Setup AI" : "aiku";
       }
     }
   } catch {
@@ -634,7 +642,7 @@ function stopFocusTimer(silent = false) {
   }
   timerRemainingSec = 0;
   const idleLabel = document.getElementById("idle-label");
-  if (idleLabel) idleLabel.textContent = "AI Ready";
+  if (idleLabel) idleLabel.textContent = "aiku";
   const pomoLabel = document.getElementById("chip-pomodoro-label");
   if (pomoLabel) pomoLabel.textContent = "Fokus 25m";
   if (!silent) showToast("Timer fokus dihentikan.", "ok");
@@ -792,8 +800,14 @@ function describeVoiceModeLabel(mode) {
   }
 }
 
+function stripEmojisForSpeechClient(str) {
+  return String(str || "")
+    .replace(/\p{Extended_Pictographic}|\p{Emoji_Presentation}|[\u2600-\u27BF\uFE00-\uFE0F\u200D\u20E3]/gu, " ")
+    .replace(/(^|\s)(?:[:;=8][\-^']?[)DdpP(/\\|oO3*]+|<3|\^_\^|\^\^|>_<|T_T|-_-|o_O|O_o|[xX]D)(?=\s|[.,!?;:]|$)/g, "$1");
+}
+
 function splitSpeechClausesClient(rawText) {
-  const cleaned = String(rawText || "")
+  const cleaned = stripEmojisForSpeechClient(rawText)
     .replace(/```[\s\S]*?```/g, " Berikut kodenya. ")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/\*([^*]+)\*/g, "$1")
@@ -801,6 +815,7 @@ function splitSpeechClausesClient(rawText) {
     .replace(/(?:^|\n)\s*\d+[.)]\s+/g, ". ")
     .replace(/(?:^|\n)\s*[-•*]\s+/g, ", ")
     .replace(/[#>_~|]/g, " ")
+    .replace(/\s+([.,!?;:])/g, "$1")
     .replace(/\s*\.\s*\./g, ".")
     .replace(/\s+/g, " ")
     .trim();
@@ -882,7 +897,12 @@ function createRealtimeVoiceSession(onAllDone = null) {
   };
 
   const enqueueWebClause = (clauseText) => {
-    const clean = clauseText.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1").trim();
+    const clean = stripEmojisForSpeechClient(clauseText)
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/\s+([.,!?;:])/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
     if (!clean || !("speechSynthesis" in window) || sessionId !== activeSpeechSessionId) return;
     pendingWebUtterances += 1;
     const utt = new SpeechSynthesisUtterance(clean);
@@ -1201,7 +1221,7 @@ function startVoiceSetupPolling() {
         voiceSetupPollTimer = null;
         wrap?.classList.add("hidden");
         populateVoiceStudio(vStatus);
-        if (idleLabel && timerRemainingSec === 0) idleLabel.textContent = "AI Ready";
+        if (idleLabel && timerRemainingSec === 0) idleLabel.textContent = "aiku";
         return;
       }
 
@@ -1219,7 +1239,7 @@ function startVoiceSetupPolling() {
         clearInterval(voiceSetupPollTimer);
         voiceSetupPollTimer = null;
         setTimeout(() => wrap?.classList.add("hidden"), 1800);
-        if (idleLabel && timerRemainingSec === 0) idleLabel.textContent = "AI Ready";
+        if (idleLabel && timerRemainingSec === 0) idleLabel.textContent = "aiku";
         populateVoiceStudio(vStatus);
         showIslandNotification(
           "Mesin Suara Offline Siap",
@@ -1231,7 +1251,7 @@ function startVoiceSetupPolling() {
         clearInterval(voiceSetupPollTimer);
         voiceSetupPollTimer = null;
         wrap?.classList.add("hidden");
-        if (idleLabel && timerRemainingSec === 0) idleLabel.textContent = "AI Ready";
+        if (idleLabel && timerRemainingSec === 0) idleLabel.textContent = "aiku";
         populateVoiceStudio(vStatus);
         showToast(`Gagal mengunduh mesin suara: ${prog.error || "Network error"}`, "err");
       }
@@ -1786,6 +1806,10 @@ function trackHitBoxForMs(durationMs = 420) {
 function setIdleHovered(hovered) {
   const island = document.getElementById("island");
   if (!island) return;
+  if (hovered && island.dataset.state === "idle" && ledgeHub?.shouldOpenFullOnHover()) {
+    setIslandState("palette");
+    return;
+  }
   const next = Boolean(hovered && island.dataset.state === "idle");
   if (isIdleHovered === next && island.classList.contains("is-hovered") === next) return;
   isIdleHovered = next;
@@ -2064,7 +2088,7 @@ async function refreshStatus() {
 
     document.getElementById("idle-file-count").textContent = formatCompactCount(count);
     if (!bootGreetingActive && timerRemainingSec === 0) {
-      document.getElementById("idle-label").textContent = status.modelReady ? "AI Ready" : "Setup AI";
+      document.getElementById("idle-label").textContent = status.modelReady ? "aiku" : "Setup AI";
     }
     document.getElementById("inspector-sandbox").textContent = `Sandbox: ${status.primarySandbox}`;
     updateWelcomeCard(status, count);
@@ -3845,8 +3869,8 @@ function initGraphViewPanel() {
     wallpaperGraphEnabled = Boolean(active);
     toggleBtn.classList.toggle("active", wallpaperGraphEnabled);
     toggleBtn.dataset.tip = wallpaperGraphEnabled
-      ? "Live Wallpaper Graph: AKTIF (Klik untuk matikan)"
-      : "Live Wallpaper Graph: NONAKTIF (Klik untuk tampilkan di wallpaper laptop)";
+      ? "Knowledge Graph Widget: AKTIF (Klik untuk tutup)"
+      : "Knowledge Graph Widget: NONAKTIF (Klik untuk buka widget ringan)";
   };
 
   const applyWallpaperState = async (enable, silent = false) => {
@@ -3861,8 +3885,8 @@ function initGraphViewPanel() {
         if (!silent) {
           showToast(
             res
-              ? "Live Wallpaper Graph aktif! Semua AI (Lokal, Antigravity, Gemini) terhubung."
-              : "Live Wallpaper Graph dimatikan.",
+              ? "Knowledge Graph Widget dibuka di pojok kanan bawah!"
+              : "Knowledge Graph Widget ditutup.",
             "ok"
           );
         }
@@ -3885,8 +3909,8 @@ function initGraphViewPanel() {
         if (!silent) {
           showToast(
             active
-              ? "Live Wallpaper Graph aktif di desktop! (Lokal + Antigravity + Gemini)"
-              : "Live Wallpaper Graph dimatikan.",
+              ? "Knowledge Graph Widget dibuka di pojok kanan bawah!"
+              : "Knowledge Graph Widget ditutup.",
             "ok"
           );
         }
@@ -4729,6 +4753,27 @@ function initModernHoverTooltips() {
   document.addEventListener("pointerdown", hideTip, true);
   window.addEventListener("blur", hideTip);
 }
+
+  // Inisialisasi 5-Core-Nav + Semua Fitur App Drawer & Power Tools
+  if (typeof window.initAikuLedgeHub === "function") {
+    ledgeHub = window.initAikuLedgeHub({
+      rpc,
+      showToast,
+      setIslandState,
+      trackHitBox: trackHitBoxForMs,
+    });
+    if (typeof window.initAikuPowerTools === "function" && ledgeHub) {
+      window.initAikuPowerTools({
+        rpc,
+        rpcStream,
+        recordClip: recordClipboardEntry,
+        showToast,
+        switchTab: ledgeHub.switchTab,
+        setIslandState,
+        trackHitBox: trackHitBoxForMs,
+      });
+    }
+  }
 
   // Graph View (Live AI Reasoning + Workspace File Graph — InfraNodus Style)
   initGraphViewPanel();

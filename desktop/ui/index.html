@@ -27,10 +27,12 @@
                   <path d="M16.9 10.6a5.4 5.4 0 0 1 0 6.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" opacity="0.82" />
                   <path d="M19.5 8.4a8.4 8.4 0 0 1 0 11.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.45" />
                 </svg>
-                <span id="idle-label" class="idle-label">AI Ready</span>
+                <span id="idle-label" class="idle-label">aiku</span>
               </div>
               <div class="idle-right">
-                <span id="idle-file-count" class="new-pill mono">0 file</span>
+                <span id="idle-live-stats" class="idle-live-stats mono hidden"></span>
+                <span id="idle-timer-pill" class="idle-timer-pill mono hidden"></span>
+                <span id="idle-file-count" class="new-pill mono hidden">0</span>
                 <button id="btn-idle-mic" type="button" class="icon-btn-tiny" title="Input Suara">
                   <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="9" y="2" width="6" height="11" rx="3" />
@@ -94,19 +96,68 @@
           </div>
 
           <!-- ========================================
-               STATE 3: QUICK COMMAND & MICRO-ASSISTANT (630px)
+               STATE 3: TOP-MOUNTED DYNAMIC LEDGE + AI ASSISTANT HUB (630px)
                ======================================== -->
           <div id="view-palette" class="view view-palette">
+            <!-- Top Icon Navigation Bar (5 Core Icons + Semua Fitur Drawer) -->
+            <nav id="ledge-nav" class="ledge-nav" aria-label="Menu Utama aiku">
+              <button type="button" class="ledge-nav-btn active" data-ledge-tab="ai" data-tip="aiku AI Assistant">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M13.5 11.2a3.8 3.8 0 1 0 0 5.6v-5.6ZM13.5 14v3.4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M16.9 10.6a5.4 5.4 0 0 1 0 6.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                  <path d="M19.5 8.4a8.4 8.4 0 0 1 0 11.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.6" />
+                </svg>
+              </button>
+              <button type="button" class="ledge-nav-btn" data-ledge-tab="home" data-tip="Home — Media, Kontrol Cepat &amp; Volume">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 10.5L12 3l9 7.5" />
+                  <path d="M5 9.5V19a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9.5" />
+                </svg>
+              </button>
+              <button type="button" class="ledge-nav-btn" data-ledge-tab="timer" data-tip="Timer &amp; Fokus Countdown">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="13" r="8" />
+                  <path d="M12 9v4l2.5 2M9.5 2h5" />
+                </svg>
+              </button>
+              <button type="button" class="ledge-nav-btn" data-ledge-tab="clipboard" data-tip="Clipboard Manager">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="8" y="2" width="8" height="4" rx="1.2" />
+                  <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+                </svg>
+              </button>
+              <button type="button" class="ledge-nav-btn" data-ledge-tab="all-features" data-tip="Semua Fitur">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="3.5" y="3.5" width="7" height="7" rx="2" />
+                  <rect x="13.5" y="3.5" width="7" height="7" rx="2" opacity="0.65" />
+                  <rect x="3.5" y="13.5" width="7" height="7" rx="2" opacity="0.65" />
+                  <rect x="13.5" y="13.5" width="7" height="7" rx="2" />
+                </svg>
+              </button>
+            </nav>
+
+            <!-- Back Header Bar saat membuka salah satu fitur dari laci Semua Fitur -->
+            <div id="subtool-back-bar" class="subtool-back-bar hidden">
+              <button id="btn-back-all-features" type="button" class="subtool-back-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                  <path d="M19 12H5M12 19l-7-7 7-7" />
+                </svg>
+                <span>Semua Fitur</span>
+              </button>
+              <span id="subtool-active-title" class="subtool-active-title">Fitur</span>
+            </div>
+
+            <!-- PANE 0: aiku AI Chat & File Assistant -->
+            <div id="ledge-pane-ai" class="ledge-pane active">
             <form id="palette-form" class="palette-input-bar">
-              <svg class="aiku-logo-mark icon-spark-grad" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M13.5 11.2a3.8 3.8 0 1 0 0 5.6v-5.6ZM13.5 14v3.4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                <path d="M16.9 10.6a5.4 5.4 0 0 1 0 6.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" opacity="0.82" />
-                <path d="M19.5 8.4a8.4 8.4 0 0 1 0 11.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.45" />
+              <svg class="input-prompt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.5-3.5" />
               </svg>
               <input
                 id="palette-input"
                 type="text"
-                placeholder="Tanya aiku, hitung, cari file, atau ketik perintah..."
+                placeholder="Tanya aiku, cari file, atau ketik perintah..."
                 autocomplete="off"
               />
               <button id="btn-palette-think" type="button" class="icon-btn-tiny icon-btn-tts" title="Mode Thinking (Aktif/Nonaktif di Chat • Wajib OFF di Voice)">
@@ -114,7 +165,7 @@
                   <path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z" fill="currentColor" fill-opacity="0.16" />
                 </svg>
               </button>
-              <button id="btn-palette-graph" type="button" class="icon-btn-tiny icon-btn-tts" title="Live Wallpaper Graph (ON/OFF — Peta Pengetahuan Semua AI di Wallpaper)">
+              <button id="btn-palette-graph" type="button" class="icon-btn-tiny icon-btn-tts" title="Knowledge Graph Widget (ON/OFF — Widget Ringan Multi-AI)">
                 <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="6" cy="6" r="2.5" fill="currentColor" fill-opacity="0.22" />
                   <circle cx="18" cy="7" r="2.5" fill="currentColor" fill-opacity="0.22" />
@@ -141,13 +192,13 @@
                 </svg>
                 <span id="inbox-unread-badge" class="inbox-badge hidden">0</span>
               </button>
-              <button id="btn-open-security" type="button" class="icon-btn-tiny" title="Pengaturan & Rollback">
+              <button id="btn-open-security" type="button" class="icon-btn-tiny" title="Pengaturan AI &amp; Voice Studio">
                 <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
                   <circle cx="12" cy="12" r="3" fill="currentColor" fill-opacity="0.2" />
                   <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
                 </svg>
               </button>
-              <button id="btn-quit-app" type="button" class="icon-btn-tiny" title="Tutup aiku">
+              <button id="btn-quit-app" type="button" class="icon-btn-tiny hidden" title="Tutup aiku">
                 <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
                   <path d="M6 6l12 12M18 6L6 18" />
                 </svg>
@@ -349,17 +400,534 @@
 
             <!-- Mini Chat Toolbar (muncul saat percakapan berlangsung) -->
             <div id="chat-toolbar" class="chat-toolbar hidden">
-              <span id="chat-engine-indicator" class="chat-engine-indicator mono">Percakapan Aktif</span>
-              <button id="btn-clear-chat" type="button" class="chat-clear-btn mono" title="Bersihkan &amp; kembali ke layar sambutan">
+              <span id="chat-engine-indicator" class="chat-engine-indicator">Qwen3 4B · Lokal</span>
+              <button id="btn-clear-chat" type="button" class="chat-clear-btn" title="Mulai percakapan baru">
                 <svg class="icon-inline-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
-                  <path d="M3 3v5h5" />
+                  <path d="M12 5v14M5 12h14" />
                 </svg>
-                <span>Reset Chat</span>
+                <span>Chat Baru</span>
               </button>
             </div>
 
             <div id="palette-chat-stream" class="palette-chat-stream hidden"></div>
+            </div>
+
+            <!-- PANE 1: HOME (Media Player + Quick Controls + Volume Slider) -->
+            <div id="ledge-pane-home" class="ledge-pane">
+              <div class="lh-media-card">
+                <div id="lh-art" class="lh-art">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" width="28" height="28">
+                    <path d="M9 18V5l12-2v13" />
+                    <circle cx="6" cy="18" r="3" />
+                    <circle cx="18" cy="16" r="3" />
+                  </svg>
+                </div>
+                <div class="lh-media-body">
+                  <div class="lh-media-top">
+                    <div class="lh-track-meta">
+                      <div id="lh-title" class="lh-title truncate">Tidak ada media diputar</div>
+                      <div id="lh-artist" class="lh-artist truncate">Spotify / YouTube / Browser</div>
+                    </div>
+                    <div id="lh-eq" class="lh-eq paused" aria-hidden="true">
+                      <span></span><span></span><span></span><span></span>
+                    </div>
+                  </div>
+                  <div class="lh-progress-track">
+                    <div id="lh-progress-fill" class="lh-progress-fill" style="width: 34%"></div>
+                  </div>
+                  <div class="lh-media-bottom">
+                    <span id="lh-time-cur" class="lh-time mono">0:00</span>
+                    <div class="lh-transport">
+                      <button id="lh-prev" type="button" class="lh-ctrl-btn" title="Sebelumnya">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
+                      </button>
+                      <button id="lh-play" type="button" class="lh-ctrl-btn lh-play-btn" title="Play / Pause">
+                        <svg id="lh-play-icon" viewBox="0 0 24 24" fill="currentColor" width="17" height="17"><path d="M8 5v14l11-7z" /></svg>
+                      </button>
+                      <button id="lh-next" type="button" class="lh-ctrl-btn" title="Berikutnya">
+                        <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
+                      </button>
+                    </div>
+                    <span id="lh-time-rem" class="lh-time mono">Live</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="lh-quick-row">
+                <div class="lh-quick-toggles">
+                  <button id="qc-awake" type="button" class="qc-circle-btn" data-tip="Keep Awake — Cegah layar tidur otomatis">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" /><circle cx="12" cy="12" r="3" /></svg>
+                  </button>
+                  <button id="qc-shot" type="button" class="qc-circle-btn" data-tip="Screenshot — Tangkapan layar cepat">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 2v14a2 2 0 0 0 2 2h14" /><path d="M18 22V8a2 2 0 0 0-2-2H2" /></svg>
+                  </button>
+                  <button id="qc-dark" type="button" class="qc-circle-btn" data-tip="Toggle Dark / Light Mode Windows">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z" /></svg>
+                  </button>
+                  <button id="qc-bright" type="button" class="qc-circle-btn" data-tip="Ubah Kecerahan Layar (25% / 50% / 75% / 100%)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" /></svg>
+                  </button>
+                  <button id="qc-lock" type="button" class="qc-circle-btn" data-tip="Kunci Layar Windows (Win+L)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+                  </button>
+                </div>
+
+                <div class="lh-vol-pill">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" width="15" height="15">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                  </svg>
+                  <input id="lh-vol-slider" class="lh-vol-slider" type="range" min="0" max="100" value="60" />
+                  <span id="lh-vol-val" class="lh-vol-val mono">60</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE 2: TIMER (Circular Countdown Ring + Presets) -->
+            <div id="ledge-pane-timer" class="ledge-pane">
+              <div class="lt-layout">
+                <div class="lt-ring-wrap">
+                  <svg class="lt-ring-svg" viewBox="0 0 128 128">
+                    <circle class="lt-ring-bg" cx="64" cy="64" r="54" />
+                    <circle id="lt-ring-prog" class="lt-ring-prog" cx="64" cy="64" r="54" />
+                  </svg>
+                  <div class="lt-ring-center">
+                    <div id="lt-time-display" class="lt-time-display mono">25:00</div>
+                    <div id="lt-state-label" class="lt-state-label">ready</div>
+                  </div>
+                </div>
+
+                <div class="lt-controls-col">
+                  <div id="lt-sub-caption" class="lt-sub-caption">Counting down from 25:00</div>
+                  <div class="lt-main-btns">
+                    <button id="lt-btn-toggle" type="button" class="lt-btn-play" title="Mulai / Jeda">
+                      <svg id="lt-toggle-icon" viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M8 5v14l11-7z" /></svg>
+                    </button>
+                    <button id="lt-btn-reset" type="button" class="lt-btn-reset" title="Reset Timer">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                    </button>
+                  </div>
+                  <div class="lt-delta-pills">
+                    <button type="button" class="lt-delta-btn" data-delta="60">+1 min</button>
+                    <button type="button" class="lt-delta-btn" data-delta="300">+5 min</button>
+                    <button type="button" class="lt-delta-btn" data-delta="-60">-1 min</button>
+                    <button type="button" class="lt-delta-btn" data-delta="900">+15 min</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE 3: CLIPBOARD MANAGER (Search + Pin + Click to Copy) -->
+            <div id="ledge-pane-clipboard" class="ledge-pane">
+              <div class="lc-top-row">
+                <div class="lc-search-box">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+                  </svg>
+                  <input id="lc-search-input" type="text" placeholder="Search clipboard..." autocomplete="off" />
+                </div>
+                <button id="lc-btn-grab" type="button" class="qc-circle-btn" data-tip="Ambil teks terbaru dari Clipboard sekarang">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M12 5v14M5 12h14" /></svg>
+                </button>
+                <button id="lc-btn-clear" type="button" class="qc-circle-btn" data-tip="Bersihkan item yang tidak di-pin">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" width="14" height="14"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>
+                </button>
+              </div>
+              <div id="lc-items-list" class="lc-items-list"></div>
+            </div>
+
+            <!-- PANE 4: FILE TRAY (4+ Slot Drag & Drop Shelf) -->
+            <div id="ledge-pane-tray" class="ledge-pane">
+              <div id="lf-dropzone" class="lf-tray-row">
+                <div id="lf-cards" class="lf-cards"></div>
+                <div class="lf-side-col">
+                  <span id="lf-count" class="lf-count mono">0</span>
+                  <button id="lf-btn-add" type="button" class="qc-circle-btn" data-tip="Tambah file ke rak File Tray">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M12 5v14M5 12h14" /></svg>
+                  </button>
+                  <button id="lf-btn-clear" type="button" class="qc-circle-btn" data-tip="Kosongkan File Tray">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" width="14" height="14"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>
+                  </button>
+                  <input id="lf-file-input" type="file" multiple class="hidden" />
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE 5: NOTES / SCRATCHPAD -->
+            <div id="ledge-pane-notes" class="ledge-pane">
+              <div class="ln-wrap">
+                <textarea
+                  id="ln-textarea"
+                  class="ln-textarea"
+                  placeholder="Tulis catatan cepat, daftar tugas, atau ide di sini (tersimpan otomatis)..."
+                ></textarea>
+              </div>
+            </div>
+
+            <!-- PANE 6: SYSTEM MONITOR (CPU / Memory / Network Sparklines + Power & Disk) -->
+            <div id="ledge-pane-monitor" class="ledge-pane">
+              <div class="lm-top-grid">
+                <div class="lm-stat-card">
+                  <div class="lm-card-label">CPU</div>
+                  <div id="lm-cpu-val" class="lm-card-val mono">8%</div>
+                  <svg id="lm-cpu-spark" class="lm-spark spark-cpu" viewBox="0 0 120 28" preserveAspectRatio="none"></svg>
+                </div>
+                <div class="lm-stat-card">
+                  <div class="lm-card-label">MEMORY</div>
+                  <div id="lm-mem-val" class="lm-card-val mono">48%</div>
+                  <svg id="lm-mem-spark" class="lm-spark spark-mem" viewBox="0 0 120 28" preserveAspectRatio="none"></svg>
+                </div>
+                <div class="lm-stat-card">
+                  <div class="lm-card-head-split">
+                    <span class="lm-card-label">NETWORK</span>
+                    <span id="lm-net-up" class="lm-sub-rate mono">↑ 0 B/s</span>
+                  </div>
+                  <div id="lm-net-val" class="lm-card-val mono">0 B/s</div>
+                  <svg id="lm-net-spark" class="lm-spark spark-net" viewBox="0 0 120 28" preserveAspectRatio="none"></svg>
+                </div>
+              </div>
+              <div class="lm-bottom-grid">
+                <div class="lm-bar-card">
+                  <div class="lm-bar-head">
+                    <span class="lm-bar-title">
+                      <svg class="lm-bolt-svg" viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
+                      <span>Power</span>
+                    </span>
+                    <strong id="lm-power-val" class="mono">AC • 100%</strong>
+                  </div>
+                  <div class="lm-bar-track"><div id="lm-power-fill" class="lm-bar-fill fill-power" style="width: 100%"></div></div>
+                </div>
+                <div class="lm-bar-card">
+                  <div class="lm-bar-head">
+                    <span class="lm-bar-title">System disk (C:)</span>
+                    <strong id="lm-disk-val" class="mono">50%</strong>
+                  </div>
+                  <div class="lm-bar-track"><div id="lm-disk-fill" class="lm-bar-fill fill-disk" style="width: 50%"></div></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE 7: CALENDAR & LIVE CLOCK -->
+            <div id="ledge-pane-calendar" class="ledge-pane">
+              <div class="lcal-layout">
+                <div class="lcal-today-col">
+                  <div id="lcal-weekday" class="lcal-weekday">Friday</div>
+                  <div id="lcal-daynum" class="lcal-daynum">27</div>
+                  <div id="lcal-monthyear" class="lcal-monthyear">November 2026</div>
+                  <div id="lcal-clock" class="lcal-clock mono">05:45</div>
+                  <div id="lcal-weeknum" class="lcal-weeknum">Week 48</div>
+                </div>
+                <div class="lcal-grid-col">
+                  <div class="lcal-grid-head">
+                    <span id="lcal-view-title" class="lcal-view-title">November 2026</span>
+                    <div class="lcal-nav-btns">
+                      <button id="lcal-prev" type="button" class="lcal-nav-btn" title="Bulan sebelumnya">‹</button>
+                      <button id="lcal-today-btn" type="button" class="lcal-nav-btn" title="Kembali ke hari ini">•</button>
+                      <button id="lcal-next" type="button" class="lcal-nav-btn" title="Bulan berikutnya">›</button>
+                    </div>
+                  </div>
+                  <div class="lcal-dow-row">
+                    <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+                  </div>
+                  <div id="lcal-days-grid" class="lcal-days-grid"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE 8: LEDGE SETTINGS & MULTI-THEME ENGINE -->
+            <div id="ledge-pane-ledge-settings" class="ledge-pane">
+              <div class="ls-list">
+                <div class="ls-row">
+                  <div class="ls-row-copy">
+                    <div class="ls-row-title">Theme</div>
+                    <div class="ls-row-sub">Pilih palet warna aksen Dynamic Island</div>
+                  </div>
+                  <div id="ls-theme-pills" class="ls-seg-pills">
+                    <button type="button" class="ls-pill active" data-theme="mono">Mono</button>
+                    <button type="button" class="ls-pill" data-theme="ledge">Ledge</button>
+                    <button type="button" class="ls-pill" data-theme="ice">Ice</button>
+                    <button type="button" class="ls-pill" data-theme="rose">Rose</button>
+                  </div>
+                </div>
+
+                <div class="ls-row">
+                  <div class="ls-row-copy">
+                    <div class="ls-row-title">Size</div>
+                    <div class="ls-row-sub">Lebar notch menempel di tepi atas layar</div>
+                  </div>
+                  <div id="ls-size-pills" class="ls-size-circles">
+                    <button type="button" class="ls-size-btn" data-size="S">S</button>
+                    <button type="button" class="ls-size-btn active" data-size="M">M</button>
+                    <button type="button" class="ls-size-btn" data-size="L">L</button>
+                    <button type="button" class="ls-size-btn" data-size="XL">XL</button>
+                  </div>
+                </div>
+
+                <div class="ls-row">
+                  <div class="ls-row-copy">
+                    <div class="ls-row-title">Open on hover</div>
+                    <div class="ls-row-sub">Buka penuh otomatis saat kursor berhenti di notch</div>
+                  </div>
+                  <label class="ls-switch"><input id="ls-open-hover" type="checkbox" /><span></span></label>
+                </div>
+
+                <div class="ls-row">
+                  <div class="ls-row-copy">
+                    <div class="ls-row-title">Live stats when idle</div>
+                    <div class="ls-row-sub">Tampilkan CPU &amp; RAM di kapsul atas saat diam</div>
+                  </div>
+                  <label class="ls-switch"><input id="ls-idle-stats" type="checkbox" /><span></span></label>
+                </div>
+
+                <div class="ls-row ls-row-cta">
+                  <div class="ls-row-copy">
+                    <div class="ls-row-title">AI Lokal, Voice Studio, Sandbox &amp; Skills</div>
+                    <div class="ls-row-sub">Atur Qwen3 4B, SKILL.md, Voice Clone &amp; Riwayat Aksi</div>
+                  </div>
+                  <button id="ls-open-full-ai" type="button" class="island-chip mono">Buka Pengaturan AI →</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE: SEMUA FITUR (ICON-ONLY COMPACT GRID + CUSTOM NAVBAR PIN) -->
+            <div id="ledge-pane-all-features" class="ledge-pane">
+              <div class="af-toolbar">
+                <div class="lc-search-box af-search-grow">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+                  </svg>
+                  <input id="af-search-input" type="text" placeholder="Cari fitur..." autocomplete="off" />
+                </div>
+                <button id="af-btn-pin-mode" type="button" class="af-pin-mode-btn mono" data-tip="Atur ikon yang di-pin ke navbar atas (maksimal 8 ikon)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12.5" height="12.5"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>
+                  <span id="af-pin-count">Pin 5/8</span>
+                </button>
+                <button id="af-btn-pin-reset" type="button" class="af-pin-reset-btn hidden" data-tip="Kembalikan navbar ke 5 ikon default">Reset</button>
+              </div>
+              <div id="af-drawer-list" class="af-drawer-list"></div>
+              <div id="af-hover-bar" class="af-hover-bar">
+                <span id="af-hover-title" class="af-hover-title">Semua Fitur</span>
+                <span id="af-hover-desc" class="af-hover-desc">Arahkan kursor ke ikon untuk melihat deskripsi • Klik Pin untuk atur navbar (maks. 8)</span>
+              </div>
+            </div>
+
+            <!-- PANE: SCREEN RECORDER PRO (FPS, RESOLUSI, BITRATE, AUDIO) -->
+            <div id="ledge-pane-screen-rec" class="ledge-pane">
+              <div class="pt-card">
+                <div class="pt-grid-4">
+                  <div class="field-group">
+                    <label class="field-label mono" for="sr-fps">FPS</label>
+                    <select id="sr-fps" class="full-select">
+                      <option value="24">24 FPS (Hemat)</option>
+                      <option value="30" selected>30 FPS (Standar)</option>
+                      <option value="60">60 FPS (Mulus)</option>
+                    </select>
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label mono" for="sr-res">Kualitas Resolusi</label>
+                    <select id="sr-res" class="full-select">
+                      <option value="720">HD 720p</option>
+                      <option value="1080" selected>Full HD 1080p</option>
+                      <option value="0">Asli Layar (Native)</option>
+                    </select>
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label mono" for="sr-bitrate">Bitrate Video</label>
+                    <select id="sr-bitrate" class="full-select">
+                      <option value="2500000">2.5 Mbps (Ringan)</option>
+                      <option value="6000000" selected>6 Mbps (Seimbang)</option>
+                      <option value="12000000">12 Mbps (Tajam)</option>
+                      <option value="20000000">20 Mbps (Ultra)</option>
+                    </select>
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label mono" for="sr-audio">Sumber Suara</label>
+                    <select id="sr-audio" class="full-select">
+                      <option value="system" selected>Audio Sistem</option>
+                      <option value="both">Sistem + Mic</option>
+                      <option value="none">Tanpa Suara</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="pt-action-bar">
+                  <span id="sr-status-text" class="pt-muted mono">Siap merekam layar atau jendela aplikasi</span>
+                  <button id="sr-btn-toggle" type="button" class="btn-apply">Mulai Rekam Layar</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE: OCR GAMBAR / SCREENSHOT OFFLINE -->
+            <div id="ledge-pane-ocr" class="ledge-pane">
+              <div id="ocr-dropzone" class="pt-drop-row">
+                <span class="pt-muted">Tekan <strong>Ctrl+V</strong> untuk paste screenshot, tarik gambar ke sini, atau</span>
+                <button id="ocr-btn-pick" type="button" class="island-chip">Pilih Gambar</button>
+                <input id="ocr-file-input" type="file" accept="image/*" class="hidden" />
+              </div>
+              <textarea id="ocr-output" class="pt-textarea" placeholder="Hasil teks dari gambar akan muncul di sini (100% Offline Windows OCR)..."></textarea>
+              <div class="pt-action-bar">
+                <span id="ocr-meta" class="pt-muted mono">Siap membaca teks gambar</span>
+                <button id="ocr-btn-copy" type="button" class="btn-apply">Salin Teks</button>
+              </div>
+            </div>
+
+            <!-- PANE: IMAGE COMPRESSOR & CONVERTER -->
+            <div id="ledge-pane-img-conv" class="ledge-pane">
+              <div class="pt-card">
+                <div class="pt-grid-3">
+                  <div class="field-group">
+                    <label class="field-label mono">File Gambar</label>
+                    <button id="ic-btn-pick" type="button" class="island-chip">Pilih / Drop Gambar</button>
+                    <input id="ic-file-input" type="file" accept="image/*" class="hidden" />
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label mono" for="ic-format">Format Tujuan</label>
+                    <select id="ic-format" class="full-select">
+                      <option value="image/webp" selected>WEBP (Paling Ringan)</option>
+                      <option value="image/jpeg">JPG / JPEG</option>
+                      <option value="image/png">PNG (Lossless)</option>
+                    </select>
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label mono" for="ic-quality">Kualitas (<span id="ic-qual-val">80%</span>)</label>
+                    <input id="ic-quality" class="motion-slider" type="range" min="15" max="100" step="5" value="80" />
+                  </div>
+                </div>
+                <div class="pt-action-bar">
+                  <span id="ic-stats" class="pt-muted mono">Belum ada gambar dipilih</span>
+                  <button id="ic-btn-save" type="button" class="btn-apply" disabled>Unduh Hasil</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE: LOCAL PDF MERGER / SPLITTER -->
+            <div id="ledge-pane-pdf-tools" class="ledge-pane">
+              <div class="pt-card">
+                <div class="pt-action-bar" style="padding-top:0">
+                  <div class="ls-seg-pills" id="pdf-mode-pills">
+                    <button type="button" class="ls-pill active" data-pdf-mode="merge">Gabung PDF</button>
+                    <button type="button" class="ls-pill" data-pdf-mode="split">Potong Halaman</button>
+                  </div>
+                  <button id="pdf-btn-pick" type="button" class="island-chip">+ Pilih File PDF</button>
+                  <input id="pdf-file-input" type="file" accept=".pdf,application/pdf" multiple class="hidden" />
+                </div>
+                <div id="pdf-files-info" class="pt-muted mono">Pilih minimal 2 file PDF untuk digabungkan secara lokal.</div>
+                <div id="pdf-split-row" class="hidden">
+                  <input id="pdf-range-input" type="text" class="full-input" placeholder="Rentang halaman yang diambil (contoh: 1-3, 5, 8-10)" />
+                </div>
+                <div class="pt-action-bar">
+                  <span class="pt-muted">100% diproses lokal di laptop tanpa upload internet</span>
+                  <button id="pdf-btn-run" type="button" class="btn-apply">Proses &amp; Simpan PDF</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE: QUICK TRANSLATE & PARAPHRASE (REAL-TIME AUTO) -->
+            <div id="ledge-pane-translate" class="ledge-pane">
+              <div class="tr-box-wrap">
+                <textarea id="tr-input" class="pt-textarea pt-textarea-sm tr-textarea" spellcheck="false" placeholder="Ketik atau paste teks — otomatis diterjemahkan secara real-time..."></textarea>
+                <button id="tr-copy-input" type="button" class="tr-copy-btn" title="Salin teks sumber">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  <span class="tr-copy-label">Salin</span>
+                </button>
+              </div>
+              <div class="pt-action-bar tr-mid-bar">
+                <div class="header-right-group">
+                  <select id="tr-lang" class="full-select" style="width:auto">
+                    <option value="en">Ke Bahasa Inggris</option>
+                    <option value="id">Ke Bahasa Indonesia</option>
+                  </select>
+                  <button id="tr-btn-swap" type="button" class="tr-swap-btn" title="Tukar arah bahasa &amp; teks">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M7 16V4m0 0L3 8m4-4 4 4M17 8v12m0 0 4-4m-4 4-4-4"/></svg>
+                  </button>
+                  <select id="tr-style" class="full-select" style="width:auto">
+                    <option value="natural">Gaya Natural</option>
+                    <option value="formal">Formal / Email</option>
+                    <option value="casual">Santai</option>
+                    <option value="concise">Singkat &amp; Padat</option>
+                  </select>
+                </div>
+                <span id="tr-live-status" class="tr-live-badge mono">
+                  <span class="tr-live-dot"></span>
+                  <span id="tr-live-text">Live Otomatis</span>
+                </span>
+              </div>
+              <div class="tr-box-wrap tr-output-wrap">
+                <textarea id="tr-output" class="pt-textarea pt-textarea-sm tr-textarea" readonly spellcheck="false" placeholder="Hasil terjemahan real-time Qwen3 lokal akan muncul otomatis di sini..."></textarea>
+                <button id="tr-copy-output" type="button" class="tr-copy-btn" title="Salin hasil terjemahan">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  <span class="tr-copy-label">Salin</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- PANE: SMART CONVERTER + PASSWORD & UUID -->
+            <div id="ledge-pane-converter" class="ledge-pane">
+              <div class="pt-card">
+                <div class="field-group">
+                  <label class="field-label mono" for="cv-input">Kalkulator &amp; Konversi Satuan Instan</label>
+                  <input id="cv-input" type="text" class="full-input" placeholder="Contoh: 24px to rem, 1536 mb to gb, 100 f to c, 15 km to mi, 25% * 350000" />
+                </div>
+                <div id="cv-result" class="cv-result-box mono">Ketik ekspresi di atas untuk hasil instan</div>
+                <div class="pt-action-bar">
+                  <span class="pt-muted">Generator Keamanan 1-Klik (langsung tersalin):</span>
+                  <div class="header-right-group">
+                    <button id="cv-btn-pass16" type="button" class="island-chip mono">Password 16</button>
+                    <button id="cv-btn-pass24" type="button" class="island-chip mono">Password 24</button>
+                    <button id="cv-btn-uuid" type="button" class="island-chip mono">UUID v4</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE: DEV PORT & PROCESS MANAGER -->
+            <div id="ledge-pane-ports" class="ledge-pane">
+              <div class="lc-top-row">
+                <div class="lc-search-box">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                    <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+                  </svg>
+                  <input id="dp-filter" type="text" placeholder="Filter port atau nama proses (mis. 3000, 5173, node)..." autocomplete="off" />
+                </div>
+                <button id="dp-btn-refresh" type="button" class="island-chip mono">Refresh</button>
+              </div>
+              <div id="dp-list" class="lc-items-list"></div>
+            </div>
+
+            <!-- PANE: NETWORK PING, IP & WI-FI DIAGNOSTICS -->
+            <div id="ledge-pane-net-diag" class="ledge-pane">
+              <div class="lm-top-grid">
+                <div class="lm-stat-card">
+                  <div class="lm-card-label">CLOUDFLARE (1.1.1.1)</div>
+                  <div id="nd-cf" class="lm-card-val mono">-- ms</div>
+                </div>
+                <div class="lm-stat-card">
+                  <div class="lm-card-label">GOOGLE (8.8.8.8)</div>
+                  <div id="nd-gg" class="lm-card-val mono">-- ms</div>
+                </div>
+                <div class="lm-stat-card">
+                  <div class="lm-card-label">JITTER &amp; STATUS</div>
+                  <div id="nd-status" class="lm-card-val mono">--</div>
+                </div>
+              </div>
+              <div class="pt-card">
+                <div class="pt-action-bar" style="padding-top:0">
+                  <div class="mono" style="font-size:11.5px;color:#d4d4dc">
+                    <div>Wi-Fi / Adapter: <strong id="nd-ssid">-</strong></div>
+                    <div>IPv4 Lokal: <strong id="nd-ip">-</strong> • DNS: <span id="nd-dns">-</span></div>
+                  </div>
+                  <button id="nd-btn-run" type="button" class="btn-apply">Tes Ping Ulang</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE: DIFF CHECKER (BANDINGKAN 2 TEKS / KODE) -->
+            <div id="ledge-pane-diff" class="ledge-pane">
+              <div class="df-inputs-grid">
+                <textarea id="df-left" class="pt-textarea pt-textarea-sm mono" placeholder="Teks / Kode Awal (A)..."></textarea>
+                <textarea id="df-right" class="pt-textarea pt-textarea-sm mono" placeholder="Teks / Kode Baru (B)..."></textarea>
+              </div>
+              <div id="df-output" class="df-output mono">Ketik atau tempel dua potongan teks di atas untuk melihat perbedaan baris secara otomatis.</div>
+            </div>
 
             <div id="handle-palette" class="notch-grabber clickable" title="Perkecil (Esc)"></div>
           </div>
@@ -814,6 +1382,8 @@
       </div>
     </main>
 
+    <script src="ledge-tabs.js"></script>
+    <script src="power-tools-ui.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

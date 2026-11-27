@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>aiku Live Wallpaper Graph</title>
+    <title>aiku Knowledge Widget</title>
     <style>
       * {
         box-sizing: border-box;
@@ -15,13 +15,69 @@
         width: 100%;
         height: 100%;
         overflow: hidden;
-        background: #161619;
+        background: #121215;
         color: #f4f4f5;
         font-family: "Segoe UI Variable Text", "Inter", system-ui, sans-serif;
         user-select: none;
       }
-      #wallpaper-canvas {
+      .widget-shell {
         position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        background: #141418;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      /* Compact Top Header Bar (Draggable in Tauri) */
+      .widget-header {
+        height: 32px;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 10px;
+        background: #0d0d11;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        -webkit-app-region: drag;
+      }
+      .wh-left {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #f4f4f5;
+      }
+      .wh-counts {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-family: "JetBrains Mono", Consolas, monospace;
+        font-size: 10px;
+        color: #a1a1aa;
+      }
+      .wh-src {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .src-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        flex-shrink: 0;
+      }
+
+      /* Canvas Area */
+      .canvas-stage {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        width: 100%;
+      }
+      #wallpaper-canvas {
+        position: absolute;
         inset: 0;
         width: 100%;
         height: 100%;
@@ -35,270 +91,210 @@
         cursor: pointer;
       }
 
-      /* Minimalist Bottom-Right HUD */
-      .hud {
-        position: fixed;
-        right: 26px;
-        bottom: 58px;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        gap: 6px;
-        pointer-events: none;
-        opacity: 0.86;
-      }
-      .hud-card {
+      /* Compact Footer Controls */
+      .widget-footer {
+        height: 32px;
+        flex-shrink: 0;
         display: flex;
         align-items: center;
-        gap: 11px;
-        padding: 7px 14px;
-        border-radius: 999px;
-        background: rgba(16, 16, 20, 0.78);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        backdrop-filter: blur(12px);
-        font-size: 11px;
-        color: #a1a1aa;
+        justify-content: space-between;
+        padding: 0 8px;
+        background: #0d0d11;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
       }
-      .hud-brand {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        color: #f4f4f5;
-        font-weight: 600;
-      }
-      .hud-sep {
-        width: 1px;
-        height: 12px;
-        background: rgba(255, 255, 255, 0.12);
-      }
-      .hud-src {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        font-family: "JetBrains Mono", Consolas, monospace;
-        font-size: 10.5px;
-      }
-      .src-dot {
-        width: 6.5px;
-        height: 6.5px;
-        border-radius: 999px;
-      }
-      .hud-insight {
-        font-family: "JetBrains Mono", Consolas, monospace;
-        font-size: 10px;
-        color: #71717a;
-        padding-right: 6px;
-      }
-
-      /* Interactive Controls (Bottom-Left) */
       .controls {
-        position: fixed;
-        left: 24px;
-        bottom: 58px;
         display: flex;
         align-items: center;
-        gap: 5px;
-        padding: 4px;
-        border-radius: 999px;
-        background: rgba(16, 16, 20, 0.78);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        backdrop-filter: blur(12px);
+        gap: 3px;
       }
       .ctrl-btn {
-        height: 26px;
-        min-width: 26px;
-        padding: 0 9px;
-        border-radius: 999px;
+        height: 22px;
+        min-width: 22px;
+        padding: 0 7px;
+        border-radius: 6px;
         border: none;
         background: transparent;
         color: #a1a1aa;
         font-family: "JetBrains Mono", Consolas, monospace;
-        font-size: 11px;
+        font-size: 10.5px;
         cursor: pointer;
-        transition: background 0.15s ease, color 0.15s ease;
+        -webkit-app-region: no-drag;
       }
       .ctrl-btn:hover {
         background: rgba(255, 255, 255, 0.1);
         color: #f4f4f5;
       }
+      .hud-insight {
+        font-family: "JetBrains Mono", Consolas, monospace;
+        font-size: 9.5px;
+        color: #71717a;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 170px;
+      }
 
-      /* Interactive Node Inspector Card (muncul saat node diklik) */
+      /* Compact Node Inspector Popover */
       .node-card {
-        position: fixed;
-        left: 24px;
-        top: 24px;
-        width: 268px;
-        padding: 12px 14px;
-        border-radius: 14px;
-        background: rgba(16, 16, 20, 0.9);
-        border: 1px solid rgba(255, 255, 255, 0.11);
-        backdrop-filter: blur(14px);
+        position: absolute;
+        left: 8px;
+        top: 8px;
+        width: 220px;
+        padding: 9px 10px;
+        border-radius: 10px;
+        background: rgba(13, 13, 17, 0.96);
+        border: 1px solid rgba(255, 255, 255, 0.12);
         display: flex;
         flex-direction: column;
-        gap: 8px;
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+        gap: 6px;
+        z-index: 10;
       }
-      .node-card.hidden {
+      .node-card.hidden,
+      .custom-modal.hidden {
         display: none;
       }
       .node-card-head {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 8px;
+        gap: 6px;
       }
       .node-card-title {
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 600;
         color: #f4f4f5;
         display: inline-flex;
         align-items: center;
-        gap: 7px;
+        gap: 6px;
       }
       .node-card-meta {
         font-family: "JetBrains Mono", Consolas, monospace;
-        font-size: 10px;
+        font-size: 9.5px;
         color: #8b8b96;
       }
       .node-neighbors {
         display: flex;
         flex-wrap: wrap;
-        gap: 5px;
-        max-height: 110px;
+        gap: 4px;
+        max-height: 76px;
         overflow-y: auto;
       }
       .nb-chip {
-        padding: 3px 8px;
+        padding: 2px 6px;
         border-radius: 999px;
         border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(255, 255, 255, 0.05);
         color: #d4d4d8;
-        font-size: 10.5px;
+        font-size: 10px;
         cursor: pointer;
-        transition: background 0.15s ease, color 0.15s ease;
       }
       .nb-chip:hover {
         background: rgba(255, 255, 255, 0.14);
         color: #ffffff;
       }
 
-      /* Custom Node Modal Popover */
+      /* Compact Popover Modals (Custom Node & Motion) */
       .custom-modal {
-        position: fixed;
-        left: 24px;
-        bottom: 98px;
-        width: 286px;
-        padding: 13px 14px;
-        border-radius: 14px;
-        background: rgba(16, 16, 20, 0.94);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        backdrop-filter: blur(14px);
+        position: absolute;
+        left: 8px;
+        bottom: 8px;
+        width: 248px;
+        padding: 10px 11px;
+        border-radius: 10px;
+        background: rgba(13, 13, 17, 0.97);
+        border: 1px solid rgba(255, 255, 255, 0.14);
         display: flex;
         flex-direction: column;
-        gap: 9px;
-        box-shadow: 0 14px 36px rgba(0, 0, 0, 0.52);
-      }
-      .custom-modal.hidden {
-        display: none;
+        gap: 7px;
+        z-index: 12;
       }
       .cm-title {
-        font-size: 12px;
+        font-size: 11.5px;
         font-weight: 600;
         color: #f4f4f5;
       }
       .cm-input {
         width: 100%;
-        padding: 7px 10px;
-        border-radius: 9px;
+        padding: 5px 8px;
+        border-radius: 7px;
         border: 1px solid rgba(255, 255, 255, 0.12);
         background: rgba(255, 255, 255, 0.05);
         color: #f4f4f5;
-        font-size: 11.5px;
+        font-size: 11px;
         font-family: inherit;
         outline: none;
         user-select: text;
       }
-      .cm-input:focus {
-        border-color: rgba(255, 255, 255, 0.3);
-      }
       .cm-colors {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 7px;
       }
       .cm-swatch {
-        width: 18px;
-        height: 18px;
+        width: 16px;
+        height: 16px;
         border-radius: 999px;
         border: 2px solid transparent;
         cursor: pointer;
-        transition: transform 0.14s ease, border-color 0.14s ease;
       }
       .cm-swatch.active {
         border-color: #ffffff;
-        transform: scale(1.15);
       }
       .cm-actions {
         display: flex;
         justify-content: flex-end;
-        gap: 6px;
-        margin-top: 2px;
+        gap: 5px;
       }
       .cm-btn-primary {
-        padding: 5px 12px;
-        border-radius: 8px;
+        padding: 4px 10px;
+        border-radius: 6px;
         border: none;
         background: #f4f4f5;
         color: #09090b;
-        font-size: 11px;
+        font-size: 10.5px;
         font-weight: 600;
         cursor: pointer;
       }
       .cm-btn-danger {
-        padding: 4px 10px;
-        border-radius: 8px;
+        padding: 3px 8px;
+        border-radius: 6px;
         border: 1px solid rgba(224, 82, 82, 0.45);
         background: rgba(224, 82, 82, 0.14);
         color: #fca5a5;
-        font-size: 10.5px;
+        font-size: 10px;
         cursor: pointer;
         align-self: flex-start;
       }
       .motion-modes {
         display: grid;
         grid-template-columns: repeat(2, 1fr);
-        gap: 5px;
+        gap: 4px;
       }
       .motion-mode-btn {
-        padding: 6px 8px;
-        border-radius: 8px;
+        padding: 5px 6px;
+        border-radius: 7px;
         border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(255, 255, 255, 0.04);
         color: #a1a1aa;
-        font-size: 11px;
+        font-size: 10.5px;
         font-family: inherit;
         cursor: pointer;
-        transition: all 0.14s ease;
-      }
-      .motion-mode-btn:hover {
-        background: rgba(255, 255, 255, 0.09);
-        color: #f4f4f5;
       }
       .motion-mode-btn.active {
         background: rgba(255, 255, 255, 0.16);
-        border-color: rgba(255, 255, 255, 0.34);
+        border-color: rgba(255, 255, 255, 0.32);
         color: #ffffff;
         font-weight: 600;
       }
       .motion-slider-row {
         display: flex;
         flex-direction: column;
-        gap: 3px;
+        gap: 2px;
       }
       .motion-slider-head {
         display: flex;
         justify-content: space-between;
-        font-size: 10.5px;
+        font-size: 10px;
         color: #a1a1aa;
         font-family: "JetBrains Mono", Consolas, monospace;
       }
@@ -310,93 +306,96 @@
     </style>
   </head>
   <body>
-    <canvas id="wallpaper-canvas"></canvas>
-
-    <!-- Node Inspector (muncul saat klik node) -->
-    <div id="node-card" class="node-card hidden">
-      <div class="node-card-head">
-        <span class="node-card-title">
-          <span id="nc-dot" class="src-dot"></span>
-          <span id="nc-label">Konsep</span>
-        </span>
-        <button id="nc-close" type="button" class="ctrl-btn" title="Tutup">×</button>
-      </div>
-      <div id="nc-meta" class="node-card-meta"></div>
-      <div id="nc-neighbors" class="node-neighbors"></div>
-      <button id="nc-delete" type="button" class="cm-btn-danger hidden">Hapus Custom Node</button>
-    </div>
-
-    <!-- Custom Node Creator Popover -->
-    <form id="custom-node-modal" class="custom-modal hidden">
-      <div class="cm-title">Tambah Custom Node</div>
-      <input id="cm-label" class="cm-input" type="text" maxlength="48" placeholder="Nama node (mis. Ide Startup, Skripsi)" required />
-      <input id="cm-connect" class="cm-input" type="text" maxlength="160" placeholder="Hubungkan ke node (pisahkan koma, opsional)" />
-      <input id="cm-note" class="cm-input" type="text" maxlength="200" placeholder="Catatan singkat (opsional)" />
-      <div class="cm-colors" id="cm-colors">
-        <button type="button" class="cm-swatch active" data-color="#E05252" style="background:#E05252" title="Coral"></button>
-        <button type="button" class="cm-swatch" data-color="#5C6CF5" style="background:#5C6CF5" title="Indigo"></button>
-        <button type="button" class="cm-swatch" data-color="#E5D96B" style="background:#E5D96B" title="Yellow"></button>
-        <button type="button" class="cm-swatch" data-color="#52C99A" style="background:#52C99A" title="Mint"></button>
-        <button type="button" class="cm-swatch" data-color="#C4C6CE" style="background:#C4C6CE" title="Silver"></button>
-      </div>
-      <div class="cm-actions">
-        <button id="cm-cancel" type="button" class="ctrl-btn">Batal</button>
-        <button type="submit" class="cm-btn-primary">Simpan Node</button>
-      </div>
-    </form>
-
-    <!-- Motion & Animation Customizer Popover -->
-    <div id="motion-modal" class="custom-modal hidden">
-      <div class="node-card-head">
-        <span class="cm-title">Animasi &amp; Gerakan Node</span>
-        <button id="mm-close" type="button" class="ctrl-btn" title="Tutup">×</button>
-      </div>
-      <div class="motion-modes" id="motion-modes">
-        <button type="button" class="motion-mode-btn active" data-mode="still">Tenang</button>
-        <button type="button" class="motion-mode-btn" data-mode="float">Mengambang</button>
-        <button type="button" class="motion-mode-btn" data-mode="orbit">Orbit</button>
-        <button type="button" class="motion-mode-btn" data-mode="pulse">Aliran Sinyal</button>
-      </div>
-      <div class="motion-slider-row">
-        <div class="motion-slider-head"><span>Kecepatan</span><span id="val-speed">0.8x</span></div>
-        <input id="sl-speed" class="motion-slider" type="range" min="0.2" max="2.0" step="0.1" value="0.8" />
-      </div>
-      <div class="motion-slider-row">
-        <div class="motion-slider-head"><span>Jarak Node</span><span id="val-spread">1.0x</span></div>
-        <input id="sl-spread" class="motion-slider" type="range" min="0.65" max="1.6" step="0.05" value="1.0" />
-      </div>
-      <div class="motion-slider-row">
-        <div class="motion-slider-head"><span>Kecerahan Garis</span><span id="val-edge">13%</span></div>
-        <input id="sl-edge" class="motion-slider" type="range" min="0.04" max="0.38" step="0.01" value="0.13" />
-      </div>
-    </div>
-
-    <!-- Interactive Zoom, Reset, Custom Node & Animation Controls -->
-    <div class="controls">
-      <button id="btn-zoom-in" type="button" class="ctrl-btn" title="Perbesar">+</button>
-      <button id="btn-zoom-out" type="button" class="ctrl-btn" title="Perkecil">−</button>
-      <button id="btn-reset-view" type="button" class="ctrl-btn" title="Reset posisi & zoom">Reset</button>
-      <button id="btn-add-node" type="button" class="ctrl-btn" title="Tambah Custom Node baru">+ Node</button>
-      <button id="btn-motion-cfg" type="button" class="ctrl-btn" title="Kustomisasi animasi &amp; gerakan node">Animasi</button>
-    </div>
-
-    <!-- Minimalist Source Legend HUD -->
-    <div class="hud">
-      <div class="hud-card">
-        <span class="hud-brand">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <div class="widget-shell">
+      <div class="widget-header" data-tauri-drag-region>
+        <div class="wh-left">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M13.5 11.2a3.8 3.8 0 1 0 0 5.6v-5.6ZM13.5 14v3.4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
             <path d="M16.9 10.6a5.4 5.4 0 0 1 0 6.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" opacity="0.82" />
             <path d="M19.5 8.4a8.4 8.4 0 0 1 0 11.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.45" />
           </svg>
-          <span>aiku</span>
-        </span>
-        <span class="hud-sep"></span>
-        <span class="hud-src"><span class="src-dot" style="background:#E05252"></span>Local <strong id="cnt-local">0</strong></span>
-        <span class="hud-src"><span class="src-dot" style="background:#5C6CF5"></span>Antigravity <strong id="cnt-ag">0</strong></span>
-        <span class="hud-src"><span class="src-dot" style="background:#E5D96B"></span>Gemini <strong id="cnt-gem">0</strong></span>
+          <span>aiku graph</span>
+        </div>
+        <div class="wh-counts">
+          <span class="wh-src"><span class="src-dot" style="background:#E05252"></span><strong id="cnt-local">0</strong></span>
+          <span class="wh-src"><span class="src-dot" style="background:#5C6CF5"></span><strong id="cnt-ag">0</strong></span>
+          <span class="wh-src"><span class="src-dot" style="background:#E5D96B"></span><strong id="cnt-gem">0</strong></span>
+        </div>
       </div>
-      <div id="hud-insight" class="hud-insight">Scroll untuk zoom • Drag node untuk interaksi • Klik node untuk detail</div>
+
+      <div class="canvas-stage">
+        <canvas id="wallpaper-canvas"></canvas>
+
+        <!-- Node Inspector -->
+        <div id="node-card" class="node-card hidden">
+          <div class="node-card-head">
+            <span class="node-card-title">
+              <span id="nc-dot" class="src-dot"></span>
+              <span id="nc-label">Konsep</span>
+            </span>
+            <button id="nc-close" type="button" class="ctrl-btn" title="Tutup">×</button>
+          </div>
+          <div id="nc-meta" class="node-card-meta"></div>
+          <div id="nc-neighbors" class="node-neighbors"></div>
+          <button id="nc-delete" type="button" class="cm-btn-danger hidden">Hapus Node</button>
+        </div>
+
+        <!-- Custom Node Creator -->
+        <form id="custom-node-modal" class="custom-modal hidden">
+          <div class="cm-title">Tambah Custom Node</div>
+          <input id="cm-label" class="cm-input" type="text" maxlength="48" placeholder="Nama node (mis. Ide Startup)" required />
+          <input id="cm-connect" class="cm-input" type="text" maxlength="160" placeholder="Hubungkan ke node (koma, opsional)" />
+          <input id="cm-note" class="cm-input" type="text" maxlength="200" placeholder="Catatan singkat (opsional)" />
+          <div class="cm-colors" id="cm-colors">
+            <button type="button" class="cm-swatch active" data-color="#E05252" style="background:#E05252"></button>
+            <button type="button" class="cm-swatch" data-color="#5C6CF5" style="background:#5C6CF5"></button>
+            <button type="button" class="cm-swatch" data-color="#E5D96B" style="background:#E5D96B"></button>
+            <button type="button" class="cm-swatch" data-color="#52C99A" style="background:#52C99A"></button>
+            <button type="button" class="cm-swatch" data-color="#C4C6CE" style="background:#C4C6CE"></button>
+          </div>
+          <div class="cm-actions">
+            <button id="cm-cancel" type="button" class="ctrl-btn">Batal</button>
+            <button type="submit" class="cm-btn-primary">Simpan</button>
+          </div>
+        </form>
+
+        <!-- Motion Customizer -->
+        <div id="motion-modal" class="custom-modal hidden">
+          <div class="node-card-head">
+            <span class="cm-title">Animasi Node</span>
+            <button id="mm-close" type="button" class="ctrl-btn" title="Tutup">×</button>
+          </div>
+          <div class="motion-modes" id="motion-modes">
+            <button type="button" class="motion-mode-btn active" data-mode="still">Tenang</button>
+            <button type="button" class="motion-mode-btn" data-mode="float">Mengambang</button>
+            <button type="button" class="motion-mode-btn" data-mode="orbit">Orbit</button>
+            <button type="button" class="motion-mode-btn" data-mode="pulse">Sinyal</button>
+          </div>
+          <div class="motion-slider-row">
+            <div class="motion-slider-head"><span>Kecepatan</span><span id="val-speed">0.8x</span></div>
+            <input id="sl-speed" class="motion-slider" type="range" min="0.2" max="2.0" step="0.1" value="0.8" />
+          </div>
+          <div class="motion-slider-row">
+            <div class="motion-slider-head"><span>Jarak Node</span><span id="val-spread">1.0x</span></div>
+            <input id="sl-spread" class="motion-slider" type="range" min="0.65" max="1.6" step="0.05" value="1.0" />
+          </div>
+          <div class="motion-slider-row">
+            <div class="motion-slider-head"><span>Garis</span><span id="val-edge">13%</span></div>
+            <input id="sl-edge" class="motion-slider" type="range" min="0.04" max="0.38" step="0.01" value="0.13" />
+          </div>
+        </div>
+      </div>
+
+      <div class="widget-footer">
+        <div class="controls">
+          <button id="btn-zoom-in" type="button" class="ctrl-btn" title="Perbesar">+</button>
+          <button id="btn-zoom-out" type="button" class="ctrl-btn" title="Perkecil">−</button>
+          <button id="btn-reset-view" type="button" class="ctrl-btn" title="Reset">Reset</button>
+          <button id="btn-add-node" type="button" class="ctrl-btn" title="Tambah Custom Node">+ Node</button>
+          <button id="btn-motion-cfg" type="button" class="ctrl-btn" title="Atur animasi">Animasi</button>
+        </div>
+        <div id="hud-insight" class="hud-insight">0 node</div>
+      </div>
     </div>
 
     <script src="wallpaper.js"></script>

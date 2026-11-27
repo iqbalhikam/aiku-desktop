@@ -663,46 +663,38 @@ fn set_wallpaper_graph_enabled(app: tauri::AppHandle, enabled: bool) -> Result<b
         return Ok(true);
     }
 
-    let (w, h) = {
+    // Floating Desktop Widget ringan (420x320) di pojok kanan bawah — TIDAK membajak WorkerW/fokus layar!
+    let widget_w: f64 = 420.0;
+    let widget_h: f64 = 320.0;
+    let (pos_x, pos_y) = {
         #[cfg(target_os = "windows")]
         unsafe {
-            (
-                GetSystemMetrics(0).max(1280) as f64,
-                GetSystemMetrics(1).max(720) as f64,
-            )
+            let sw = GetSystemMetrics(0).max(1280) as f64;
+            let sh = GetSystemMetrics(1).max(720) as f64;
+            ((sw - widget_w - 24.0).max(20.0), (sh - widget_h - 68.0).max(40.0))
         }
         #[cfg(not(target_os = "windows"))]
         {
-            (1920.0, 1080.0)
+            (980.0, 420.0)
         }
     };
 
-    let win = WebviewWindowBuilder::new(
+    let _win = WebviewWindowBuilder::new(
         &app,
         "wallpaper",
         WebviewUrl::App("wallpaper.html".into()),
     )
-    .title("aiku Live Wallpaper Graph")
-    .inner_size(w, h)
-    .position(0.0, 0.0)
+    .title("aiku Knowledge Widget")
+    .inner_size(widget_w, widget_h)
+    .position(pos_x, pos_y)
     .decorations(false)
-    .resizable(false)
+    .resizable(true)
     .skip_taskbar(true)
     .always_on_top(false)
     .focused(false)
-    .shadow(false)
+    .shadow(true)
     .build()
-    .map_err(|e| format!("Gagal membuat jendela Wallpaper Graph: {e}"))?;
-
-    let _ = win.set_ignore_cursor_events(true);
-
-    #[cfg(target_os = "windows")]
-    {
-        let raw_hwnd = win
-            .hwnd()
-            .map_err(|e| format!("Gagal membaca HWND wallpaper: {e}"))?;
-        attach_hwnd_to_desktop_wallpaper(raw_hwnd.0 as Hwnd)?;
-    }
+    .map_err(|e| format!("Gagal membuat jendela Knowledge Widget: {e}"))?;
 
     Ok(true)
 }

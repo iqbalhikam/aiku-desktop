@@ -54,6 +54,7 @@ export interface LlmInferenceClient {
     maxTokensOverride?: number;
     enableThinking?: boolean;
     stateless?: boolean;
+    abortPreviousStateless?: boolean;
     onToken?: (chunk: string) => void;
   }): Promise<string>;
 }
@@ -70,20 +71,23 @@ const IDLE_UNLOAD_MS = 240_000;
  * Tetap 100% statis pada posisi prefix ke-0 sehingga selalu tertahan hangat di KV-Cache!
  */
 const STATIC_CHAT_SYSTEM_PROMPT = [
-  "Namamu adalah aiKu (dibaca 'aiku'), asisten pribadi AI otonom yang cerdas, hangat, dan serbabisa di Windows 11 milik pengguna. Kamu tahu persis bahwa namamu adalah aiKu; jika dipanggil 'halo aiku' atau ditanya siapa namamu, jawab akrab sebagai aiKu.",
-  "GAYA & KAPASITAS JAWABAN:",
-  "1. Jawab langsung ke inti dengan Bahasa Indonesia lisan yang santai, spontan, dan akrab ('aku' dan 'kamu'). JANGAN mengulang pembuka klise seperti 'Oke Iqbal' atau memanggil nama pengguna di setiap jawaban — cukup bicara alami seperti teman mengobrol.",
-  "2. Sesuaikan panjang jawaban secara cerdas: untuk obrolan ringan atau konfirmasi aksi jawab ringkas (1-3 kalimat), NAMUN untuk koding, pembuatan dokumen/surat/artikel, analisis file, daftar langkah, atau penjelasan mendalam, tulis jawaban LENGKAP dan TUNTAS tanpa dipotong.",
-  "3. Kamu MEMILIKI akses penuh ke alat desktop di bawah ini. JANGAN PERNAH berkata tidak bisa mengakses komputer, aplikasi, file, pengaturan layar/suara, atau terminal!",
-  "4. RISET LATAR BELAKANG (TANPA BUKA BROWSER): Saat ada <LIVE_WEB_DATA> di konteks, langsung bacakan dan rangkum isi, fakta, dan angka pentingnya secara tuntas ke pengguna. DILARANG menyuruh pengguna 'baca di sini' atau 'cek link ini', dan DILARANG membuka browser kecuali pengguna secara eksplisit meminta buka browser/Chrome/YouTube/situs!",
-  "ALAT AKSI DESKTOP (tulis kalimat pengantar ramah ke pengguna dulu, lalu taruh tag di baris paling akhir HANYA saat aksi tersebut diminta):",
-  "- Buka aplikasi apa saja di laptop -> Contoh: Siap, aku bukakan Discord! [OPEN_APP: discord]",
-  "- Buka file/subfolder lokal -> Contoh: Aku bukakan filenya sekarang. [OPEN_FILE: Aktifitas.docx]",
+  "Namamu adalah aiku, asisten pribadi AI lokal yang cerdas, tenang, lugas, dan serbabisa di Windows 11 milik pengguna.",
+  "ATURAN GAYA BICARA NATURAL (ANTI-TEMPLATE):",
+  "1. Gunakan Bahasa Indonesia yang mengalir alami, cerdas, dan variatif seperti rekan kerja yang sigap ('aku' dan 'kamu').",
+  "2. DILARANG KERAS memakai akhiran partikel template berulang seperti ', lo!', ', lo.', ', lho!', ', nih!', ', deh!', atau ', dong!'.",
+  "3. DILARANG memulai jawaban dengan kalimat klise/template seperti 'Aku di sini...', 'Aku bisa bantu banyak hal...', 'Aku nggak tahu pasti...', 'Tentu saja!', atau mengulang nama pengguna di awal kalimat. Langsung masuk ke isi jawaban dengan susunan kalimat yang bervariasi sesuai konteks!",
+  "4. DILARANG menyisipkan emoji, emotikon teks (:), :D, ^_^), atau simbol dekoratif berlebihan agar tampilan bersih dan suara TTS terdengar murni seperti manusia.",
+  "5. Sesuaikan panjang jawaban secara proporsional: untuk sapaan/konfirmasi jawab singkat dan padat (1-2 kalimat), sedangkan untuk koding, riset, analisis dokumen, atau panduan langkah berikan jawaban LENGKAP, terstruktur, dan tuntas.",
+  "6. Kamu MEMILIKI akses penuh ke alat desktop di bawah ini. JANGAN berkata tidak bisa mengakses aplikasi, file, pengaturan layar/suara, atau terminal.",
+  "7. RISET LATAR BELAKANG (TANPA BUKA BROWSER): Saat ada <LIVE_WEB_DATA> di konteks, langsung rangkum fakta, angka, dan intinya secara tuntas tanpa menyuruh pengguna membuka link sendiri.",
+  "ALAT AKSI DESKTOP (tulis kalimat pengantar wajar dulu, lalu taruh tag di baris paling akhir HANYA saat aksi diminta):",
+  "- Buka aplikasi di laptop -> Contoh: Siap, Discord langsung kubukakan. [OPEN_APP: discord]",
+  "- Buka file/subfolder lokal -> Contoh: Ini filenya langsung kubuka. [OPEN_FILE: Aktifitas.docx]",
   "- Buka web/YouTube (HANYA jika pengguna eksplisit minta buka browser/situs/lagu) -> [OPEN_CHROME: https://youtube.com] | [OPEN_WEB: url] | [SEARCH_YT: kata kunci]",
   "- Kontrol sistem -> [SYS_CONTROL: volume_up | volume_down | mute | brightness_up | brightness_down | screenshot] | [SET_BRIGHTNESS: 70]",
   "- Buat folder baru -> [CREATE_FOLDER: Nama_Folder]",
-  '- Buat/simpan file baru (JANGAN bungkus dengan kurung siku!) -> Contoh: Ini file jadwal.md yang sudah kubuatkan:\n<write_file path="jadwal.md"># Jadwal Belajar\n- Hari 1: Dasar</write_file>',
-  "- Jalankan perintah PowerShell sistem -> Contoh: Aku siapkan perintah PowerShell-nya, klik Setujui di bawah untuk menjalankan:\n[RUN_CMD: Get-Process | Sort-Object WS -Descending | Select-Object -First 3 Name, WS]",
+  '- Buat/simpan file baru (JANGAN bungkus kurung siku!) -> Contoh: File jadwal.md sudah tersimpan:\n<write_file path="jadwal.md"># Jadwal Belajar\n- Hari 1: Dasar</write_file>',
+  "- Jalankan perintah PowerShell sistem -> Contoh: Perintah PowerShell sudah siap, klik Setujui di bawah untuk menjalankan:\n[RUN_CMD: Get-Process | Sort-Object WS -Descending | Select-Object -First 3 Name, WS]",
 ].join("\n");
 
 export class LocalLlamaEngine implements LlmInferenceClient {
@@ -98,6 +102,8 @@ export class LocalLlamaEngine implements LlmInferenceClient {
   private sessionTurnCount = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private loadingPromise: Promise<void> | null = null;
+  private statelessChain: Promise<void> = Promise.resolve();
+  private activeStatelessAbort: AbortController | null = null;
 
   constructor(options: LocalLlamaEngineOptions) {
     this.llmConfig = options.llmConfig;
@@ -328,6 +334,7 @@ export class LocalLlamaEngine implements LlmInferenceClient {
     maxTokensOverride?: number;
     enableThinking?: boolean;
     stateless?: boolean;
+    abortPreviousStateless?: boolean;
     onToken?: (chunk: string) => void;
   }): Promise<string> {
     if (input.stateless) {
@@ -337,6 +344,8 @@ export class LocalLlamaEngine implements LlmInferenceClient {
           "Kamu adalah asisten berbahasa Indonesia yang ringkas dan akurat.",
         userPrompt: input.message.slice(0, 3500),
         maxTokens: input.maxTokensOverride ?? 320,
+        ...(input.abortPreviousStateless ? { abortPrevious: true } : {}),
+        ...(input.onToken ? { onToken: input.onToken } : {}),
       });
     }
 
@@ -369,7 +378,11 @@ export class LocalLlamaEngine implements LlmInferenceClient {
         if (turn.role === "user") {
           syncedItems.push({ type: "user", text: turn.content.slice(0, 1200) });
         } else {
-          syncedItems.push({ type: "model", response: [turn.content.slice(0, 1500)] });
+          // Bersihkan sisa partikel template lama di riwayat agar tidak menular ke turn berikutnya
+          const sanitizedAssistant = turn.content
+            .replace(/,\s*lho?([.!?])/gi, "$1")
+            .slice(0, 1500);
+          syncedItems.push({ type: "model", response: [sanitizedAssistant] });
         }
       }
       this.chatSession.setChatHistory(syncedItems);
@@ -395,13 +408,16 @@ export class LocalLlamaEngine implements LlmInferenceClient {
       let thoughtClosed = false;
 
       const response = await this.chatSession.prompt(promptForModel, {
-        temperature: input.enableThinking ? 0.55 : 0.35,
-        topK: 25,
-        topP: 0.88,
-        minP: 0.05,
+        // Rekomendasi resmi Qwen3: temperature ~0.6 + topP ~0.92 + repeat/frequency penalty mencegah kalimat template berulang!
+        temperature: input.enableThinking ? 0.6 : 0.62,
+        topK: 40,
+        topP: 0.92,
+        minP: 0.04,
         repeatPenalty: {
-          penalty: 1.07,
-          lastTokens: 48,
+          penalty: 1.14,
+          frequencyPenalty: 0.28,
+          presencePenalty: 0.24,
+          lastTokens: 160,
         },
         maxTokens: effectiveMaxTokens,
         onResponseChunk: (chunk) => {
@@ -439,7 +455,9 @@ export class LocalLlamaEngine implements LlmInferenceClient {
       }
 
       this.sessionTurnCount += 1;
-      const cleanMain = response.trim();
+      const cleanMain = response
+        .replace(/,\s*lho?([.!?])(\s|$)/gi, "$1$2")
+        .trim();
       const cleanThought = thoughtBuffer.trim();
       return cleanThought.length > 0 ? `<think>${cleanThought}</think>\n${cleanMain}` : cleanMain;
     } finally {
@@ -452,43 +470,88 @@ export class LocalLlamaEngine implements LlmInferenceClient {
     userPrompt: string;
     grammarText?: string;
     maxTokens: number;
+    abortPrevious?: boolean;
+    onToken?: (chunk: string) => void;
   }): Promise<string> {
-    await this.ensureLoaded(true);
-
-    if (this.cachedLlama === null || this.cachedContext === null) {
-      throw new Error("Model lokal gagal dimuat ke memori.");
+    if (params.abortPrevious && this.activeStatelessAbort !== null) {
+      this.activeStatelessAbort.abort();
     }
 
-    const sequence = this.cachedContext.getSequence();
-    const session = new LlamaChatSession({
-      contextSequence: sequence,
-      systemPrompt: params.systemPrompt,
+    const abortController = params.abortPrevious ? new AbortController() : null;
+    if (abortController !== null) {
+      this.activeStatelessAbort = abortController;
+    }
+
+    const prevTask = this.statelessChain;
+    let releaseChain!: () => void;
+    this.statelessChain = new Promise<void>((resolve) => {
+      releaseChain = resolve;
     });
 
+    await prevTask;
+    if (abortController?.signal.aborted) {
+      releaseChain();
+      return "";
+    }
+
     try {
-      const grammar = params.grammarText
-        ? new LlamaGrammar(this.cachedLlama, { grammar: params.grammarText })
-        : undefined;
+      await this.ensureLoaded(true);
 
-      const finalUserPrompt = this.isQwen3HybridModel()
-        ? `${params.userPrompt}\n/no_think`
-        : params.userPrompt;
+      if (this.cachedLlama === null || this.cachedContext === null) {
+        throw new Error("Model lokal gagal dimuat ke memori.");
+      }
 
-      const response = await session.prompt(finalUserPrompt, {
-        ...(grammar ? { grammar } : {}),
-        temperature: params.grammarText ? 0.1 : 0.3,
-        topK: 20,
-        topP: 0.85,
-        repeatPenalty: false,
-        maxTokens: params.maxTokens,
+      const sequence = this.cachedContext.getSequence();
+      const session = new LlamaChatSession({
+        contextSequence: sequence,
+        systemPrompt: params.systemPrompt,
       });
 
-      return response.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+      try {
+        const grammar = params.grammarText
+          ? new LlamaGrammar(this.cachedLlama, { grammar: params.grammarText })
+          : undefined;
+
+        const finalUserPrompt = this.isQwen3HybridModel()
+          ? `${params.userPrompt}\n/no_think`
+          : params.userPrompt;
+
+        const response = await session.prompt(finalUserPrompt, {
+          ...(grammar ? { grammar } : {}),
+          ...(abortController ? { signal: abortController.signal, stopOnAbortSignal: true } : {}),
+          temperature: params.grammarText ? 0.1 : 0.3,
+          topK: 20,
+          topP: 0.85,
+          repeatPenalty: false,
+          maxTokens: params.maxTokens,
+          ...(params.onToken
+            ? {
+                onResponseChunk: (chunk) => {
+                  if (chunk.type === undefined && chunk.text.length > 0) {
+                    params.onToken?.(chunk.text);
+                  }
+                },
+              }
+            : {}),
+        });
+
+        return response.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+      } catch (err: unknown) {
+        if (abortController?.signal.aborted) {
+          return "";
+        }
+        throw err;
+      } finally {
+        if (this.activeStatelessAbort === abortController) {
+          this.activeStatelessAbort = null;
+        }
+        session.dispose();
+        await sequence.eraseContextTokenRanges([{ start: 0, end: sequence.nextTokenIndex }]);
+        sequence.dispose();
+        this.scheduleIdleUnload();
+      }
     } finally {
-      session.dispose();
-      await sequence.eraseContextTokenRanges([{ start: 0, end: sequence.nextTokenIndex }]);
-      sequence.dispose();
-      this.scheduleIdleUnload();
+      releaseChain();
     }
   }
 }

@@ -18,6 +18,15 @@ import {
 import { SkillManager } from "../core/skills/skill-manager.js";
 import { buildWorkspaceGraph } from "../core/graph/workspace-graph.js";
 import { AiMemoryHub } from "../core/graph/ai-memory-hub.js";
+import { LedgeControlActionSchema, WindowsTelemetryService } from "../modules/ledge-system/win-telemetry.js";
+import {
+  killDevPortProcess,
+  listListeningDevPorts,
+  mergeLocalPdfs,
+  runNetworkDiagnostics,
+  runWindowsOfflineOcr,
+  splitLocalPdf,
+} from "../modules/ledge-system/power-tools.js";
 import {
   OfflineVoiceCloneEngine,
   StreamingSpeechClauseAccumulator,
@@ -103,6 +112,15 @@ const RpcRequestSchema = z
       "getWorkspaceGraph",
       "getMemoryGraph",
       "syncAntigravityMemory",
+      "getSystemTelemetry",
+      "ledgeControl",
+      "ocrImage",
+      "listDevPorts",
+      "killDevPort",
+      "netDiagnostics",
+      "pdfMerge",
+      "pdfSplit",
+      "quickTranslate",
     ]),
     params: z.record(z.unknown()).default({}),
   })
@@ -125,6 +143,39 @@ const ToggleSkillParamsSchema = z
 const DeleteSkillParamsSchema = z
   .object({
     id: z.string().min(1).max(80),
+  })
+  .strict();
+
+const OcrImageParamsSchema = z
+  .object({
+    imageBase64: z.string().min(16),
+  })
+  .strict();
+
+const KillDevPortParamsSchema = z
+  .object({
+    pid: z.number().int().positive(),
+  })
+  .strict();
+
+const PdfMergeParamsSchema = z
+  .object({
+    filesBase64: z.array(z.string().min(16)).min(2).max(20),
+  })
+  .strict();
+
+const PdfSplitParamsSchema = z
+  .object({
+    pdfBase64: z.string().min(16),
+    rangeSpec: z.string().min(1).max(120),
+  })
+  .strict();
+
+const QuickTranslateParamsSchema = z
+  .object({
+    text: z.string().min(1).max(3000),
+    targetLang: z.enum(["id", "en"]),
+    style: z.enum(["natural", "formal", "casual", "concise"]).default("natural"),
   })
   .strict();
 
@@ -296,6 +347,7 @@ export class AiKuRpcWorker {
   private readonly voiceEngine: OfflineVoiceCloneEngine;
   private readonly skillManager: SkillManager;
   private readonly memoryHub: AiMemoryHub;
+  private readonly telemetryService: WindowsTelemetryService;
   private readonly notesStore: QuickNotesStore;
   private readonly pendingPlans = new Map<string, ExecutionPlan>();
   private readonly pendingCommands = new Map<string, PendingApprovedCommand>();
@@ -321,6 +373,7 @@ export class AiKuRpcWorker {
     });
     this.skillManager = new SkillManager(path.dirname(this.configPath));
     this.memoryHub = new AiMemoryHub(path.dirname(this.configPath));
+    this.telemetryService = new WindowsTelemetryService();
   }
 
   public startMemoryHubServer(): void {
@@ -898,6 +951,69 @@ export class AiKuRpcWorker {
         const added = this.memoryHub.syncAntigravityBrain();
         return { added, graph: this.memoryHub.getSnapshot() };
       }
+
+      case "getSystemTelemetry": {
+        return this.telemetryService.getSnapshot();
+      }
+
+      case "ledgeControl": {
+        const parsed = LedgeControlActionSchema.parse(params);
+        return this.telemetryService.executeControl(parsed);
+      }
+
+      case "ocrImage": {
+        const parsed = OcrImageParamsSchema.parse(params);
+        return runWindowsOfflineOcr(parsed.imageBase64);
+      }
+
+      case "listDevPorts": {
+        const ports = await listListeningDevPorts();
+        return { ports };
+      }
+
+      case "killDevPort": {
+        const parsed = KillDevPortParamsSchema.parse(params);
+        return killDevPortProcess(parsed.pid);
+      }
+
+      case "netDiagnostics": {
+        return runNetworkDiagnostics();
+      }
+
+      case "pdfMerge": {
+        const parsed = PdfMergeParamsSchema.parse(params);
+        return mergeLocalPdfs(parsed.filesBase64);
+      }
+
+      case "pdfSplit": {
+        const parsed = PdfSplitParamsSchema.parse(params);
+        return splitLocalPdf(parsed.pdfBase64, parsed.rangeSpec);
+      }
+
+      case "quickTranslate": {
+        const parsed = QuickTranslateParamsSchema.parse(params);
+        const langName = parsed.targetLang === "id" ? "Bahasa Indonesia" : "English";
+        const styleDesc =
+          parsed.style === "formal"
+            ? "resmi, sopan, dan profesional"
+            : parsed.style === "casual"
+              ? "santai dan akrab sehari-hari"
+              : parsed.style === "concise"
+                ? "singkat, padat, dan langsung ke inti"
+                : "alami dan luwes";
+        const reply = await this.llmEngine.chat({
+          message: `Terjemahkan dan perhalus teks berikut ke ${langName} dengan gaya ${styleDesc}. Berikan HANYA hasil teks akhirnya saja tanpa tanda kutip dan tanpa penjelasan tambahan:\n\n${parsed.text}`,
+          history: [],
+          sandboxContextSummary:
+            "Kamu adalah mesin penerjemah real-time berkecepatan tinggi. Keluarkan HANYA teks hasil terjemahan akhir tanpa kata pengantar, tanpa tanda kutip pembuka/penutup, dan tanpa catatan tambahan.",
+          stateless: true,
+          abortPreviousStateless: true,
+          enableThinking: false,
+          maxTokensOverride: 900,
+          ...(onStreamChunk ? { onToken: onStreamChunk } : {}),
+        });
+        return { result: reply.trim(), aborted: reply.length === 0 };
+      }
     }
   }
 
@@ -1344,7 +1460,7 @@ export class AiKuRpcWorker {
     const liveContext = input.streamVoice
       ? [
           contextWithSkills,
-          "MODE PERCAKAPAN SUARA: Pengguna mendengarkan jawabanmu lewat audio. Langsung jawab inti pembicaraan dengan gaya ngobrol santai dan variatif. Jangan awali dengan 'Oke ...' atau memanggil nama pengguna, dan hindari daftar bernomor 1-2-3 atau simbol markdown.",
+          "MODE PERCAKAPAN SUARA: Pengguna mendengarkan jawabanmu lewat audio. Langsung jawab inti pembicaraan secara alami, variatif, dan to-the-point. DILARANG memakai akhiran ', lo!' / ', lho!', DILARANG menulis emoji atau emotikon teks apa pun, dan hindari daftar bernomor atau simbol markdown.",
         ]
           .filter(Boolean)
           .join("\n")

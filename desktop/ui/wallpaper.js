@@ -18,8 +18,8 @@
   const canvas = document.getElementById("wallpaper-canvas");
   const ctx = canvas.getContext("2d");
 
-  let width = window.innerWidth;
-  let height = window.innerHeight;
+  let width = 420;
+  let height = 280;
   let nodes = [];
   let edges = [];
   let clusters = [];
@@ -27,6 +27,17 @@
   let simAlpha = 1.0; // D3/Obsidian-style cooling: mulai 1.0 -> tenang sempurna ke 0.0!
   let animTime = 0;
   let orbitAngle = 0;
+  let needsRender = true;
+  let lastFrameMs = 0;
+  let rafScheduled = false;
+
+  function wakeLoop() {
+    needsRender = true;
+    if (!rafScheduled) {
+      rafScheduled = true;
+      requestAnimationFrame(loop);
+    }
+  }
 
   // Motion & Animation Customizer State (persisted in localStorage)
   const MOTION_STORAGE_KEY = "aiku_wallpaper_motion_v1";
@@ -87,12 +98,15 @@
   let didDragMove = false;
 
   function resize() {
-    width = Math.max(800, window.innerWidth);
-    height = Math.max(500, window.innerHeight);
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = canvas.getBoundingClientRect();
+    width = Math.max(260, Math.round(rect.width || window.innerWidth));
+    height = Math.max(180, Math.round(rect.height || window.innerHeight - 64));
+    // Cap DPR to 1.25x untuk performa ultra-ringan di GPU terintegrasi
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    wakeLoop();
   }
 
   window.addEventListener("resize", resize);
@@ -223,8 +237,9 @@
     if (elAg) elAg.textContent = String(sc.antigravity || 0);
     if (elGem) elGem.textContent = String(sc["gemini-web"] || 0);
     if (elInsight && nodes.length > 0) {
-      elInsight.textContent = `${nodes.length} node • ${edges.length} koneksi • Scroll zoom • Drag & klik node`;
+      elInsight.textContent = `${nodes.length} node • ${edges.length} link`;
     }
+    wakeLoop();
   }
 
   async function pollGraph() {
@@ -346,18 +361,23 @@
       draggedNode.x = world.x;
       draggedNode.y = world.y;
       simAlpha = Math.max(simAlpha, 0.35); // Bangunkan pegas halus saat node ditarik
+      wakeLoop();
       return;
     }
 
     if (isPanning) {
       camX = panStartCam.x + dx;
       camY = panStartCam.y + dy;
+      wakeLoop();
       return;
     }
 
     const hit = findNodeAtWorld(world.x, world.y);
-    hoveredNode = hit;
-    canvas.classList.toggle("hovering", Boolean(hit));
+    if (hit !== hoveredNode) {
+      hoveredNode = hit;
+      canvas.classList.toggle("hovering", Boolean(hit));
+      wakeLoop();
+    }
   });
 
   const endPointer = () => {
@@ -373,6 +393,7 @@
     }
     isPanning = false;
     canvas.classList.remove("grabbing");
+    wakeLoop();
   };
 
   canvas.addEventListener("pointerup", endPointer);
@@ -390,6 +411,7 @@
       camX = mx - (mx - camX) * ratio;
       camY = my - (my - camY) * ratio;
       zoom = nextZoom;
+      wakeLoop();
     },
     { passive: false }
   );
@@ -397,9 +419,11 @@
   // Controls
   document.getElementById("btn-zoom-in")?.addEventListener("click", () => {
     zoom = Math.min(3.5, zoom * 1.22);
+    wakeLoop();
   });
   document.getElementById("btn-zoom-out")?.addEventListener("click", () => {
     zoom = Math.max(0.45, zoom * 0.82);
+    wakeLoop();
   });
   document.getElementById("btn-reset-view")?.addEventListener("click", () => {
     camX = 0;
@@ -407,10 +431,12 @@
     zoom = 1;
     selectedNode = null;
     document.getElementById("node-card")?.classList.add("hidden");
+    wakeLoop();
   });
   document.getElementById("nc-close")?.addEventListener("click", () => {
     selectedNode = null;
     document.getElementById("node-card")?.classList.add("hidden");
+    wakeLoop();
   });
 
   // Custom Node Creator UI
@@ -726,38 +752,60 @@
     if (motionCfg.mode !== "orbit") orbitAngle = 0;
     syncMotionUi();
     saveMotionCfg();
+    wakeLoop();
   });
   slSpeed?.addEventListener("input", () => {
     motionCfg.speed = Number(slSpeed.value) || 0.8;
     syncMotionUi();
     saveMotionCfg();
+    wakeLoop();
   });
   slSpread?.addEventListener("input", () => {
     motionCfg.spread = Number(slSpread.value) || 1.0;
     simAlpha = Math.max(simAlpha, 0.45);
     syncMotionUi();
     saveMotionCfg();
+    wakeLoop();
   });
   slEdge?.addEventListener("input", () => {
     motionCfg.edgeAlpha = Number(slEdge.value) || 0.13;
     syncMotionUi();
     saveMotionCfg();
+    wakeLoop();
   });
 
-  function loop() {
-    if (!document.hidden) {
-      const spd = motionCfg.speed || 0.8;
-      animTime += 0.016 * spd;
-      if (motionCfg.mode === "orbit") {
-        orbitAngle += 0.00085 * spd;
+  // Ultra-ringan: 0% CPU saat mode Tenang sudah diam; 30fps halus saat mode animasi aktif!
+  function loop(now) {
+    rafScheduled = false;
+    if (document.hidden) return;
+
+    const isAnimatedMode = motionCfg.mode !== "still";
+    const isPhysicsActive = simAlpha >= 0.004 || Boolean(draggedNode);
+    const minInterval = isAnimatedMode && !draggedNode ? 33 : 16; // 30fps hemat CPU untuk animasi ambient
+
+    if (now - lastFrameMs >= minInterval || needsRender) {
+      lastFrameMs = now;
+      if (isAnimatedMode) {
+        const spd = motionCfg.speed || 0.8;
+        animTime += 0.032 * spd;
+        if (motionCfg.mode === "orbit") {
+          orbitAngle += 0.0016 * spd;
+        }
       }
-      stepPhysics(false);
+      if (isPhysicsActive) {
+        stepPhysics(false);
+      }
       render();
+      needsRender = false;
     }
-    requestAnimationFrame(loop);
+
+    if (isAnimatedMode || isPhysicsActive) {
+      rafScheduled = true;
+      requestAnimationFrame(loop);
+    }
   }
 
   void pollGraph();
-  setInterval(pollGraph, 2500);
-  requestAnimationFrame(loop);
+  setInterval(pollGraph, 4000);
+  wakeLoop();
 })();

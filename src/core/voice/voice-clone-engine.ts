@@ -64,11 +64,21 @@ export interface VoiceStatusSummary {
 }
 
 /**
- * Membersihkan simbol tulisan/markdown agar saat diucapkan terdengar alami seperti lisan manusia
- * (tanpa membaca angka poin "1.", bintang markdown, atau simbol kode).
+ * Menghapus seluruh emoji Unicode, piktograf, kaomoji, dan emotikon teks (:), :D, ^_^, dll.)
+ * agar mesin TTS tidak pernah menerjemahkan/mengeja emotikon menjadi kalimat aneh.
+ */
+export function stripEmojisAndEmoticons(input: string): string {
+  return input
+    .replace(/\p{Extended_Pictographic}|\p{Emoji_Presentation}|[\u2600-\u27BF\uFE00-\uFE0F\u200D\u20E3]/gu, " ")
+    .replace(/(^|\s)(?:[:;=8][\-^']?[)DdpP(/\\|oO3*]+|<3|\^_\^|\^\^|>_<|T_T|-_-|o_O|O_o|[xX]D)(?=\s|[.,!?;:]|$)/g, "$1");
+}
+
+/**
+ * Membersihkan simbol tulisan/markdown/emotikon agar saat diucapkan terdengar alami seperti lisan manusia
+ * (tanpa membaca angka poin "1.", bintang markdown, emoji, atau simbol kode).
  */
 export function cleanTextForSpeech(raw: string): string {
-  return raw
+  return stripEmojisAndEmoticons(raw)
     .replace(/```[\s\S]*?```/g, " Berikut kodenya. ")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/\*\*([^*]+)\*\*/g, "$1")
@@ -80,6 +90,7 @@ export function cleanTextForSpeech(raw: string): string {
     .replace(/https?:\/\/\S+/g, " tautan web ")
     .replace(/%/g, " persen ")
     .replace(/[#>_~|]/g, " ")
+    .replace(/\s+([.,!?;:])/g, "$1")
     .replace(/\s*\.\s*\./g, ".")
     .replace(/\s+/g, " ")
     .replace(/^[.,;\s]+/, "")

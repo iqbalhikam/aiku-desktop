@@ -61,8 +61,8 @@ export interface UnifiedGraphSnapshot {
   recentEvents: Array<{ source: AiMemorySource; title: string; timestamp: string }>;
 }
 
-const MAX_MEMORY_ENTRIES = 160;
-const MAX_GRAPH_NODES = 220;
+const MAX_MEMORY_ENTRIES = 120;
+const MAX_GRAPH_NODES = 90;
 export const AI_MEMORY_HUB_PORT = 47891;
 
 const STOPWORDS = new Set([
