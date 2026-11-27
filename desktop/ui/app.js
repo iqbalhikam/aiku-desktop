@@ -537,6 +537,9 @@ function runBootWelcomeAnimation() {
         idleLabel.textContent = latestStatusCache && !latestStatusCache.modelReady ? "Setup AI" : "aiku";
       }
     }
+    if (autoHideEnabled && !isIdleHovered && island.dataset.state === "idle") {
+      scheduleAutoHide(650);
+    }
   }, 2400);
 }
 
@@ -1736,31 +1739,177 @@ function resetBalloonVisuals() {
   if (earRight) earRight.style.transform = "";
 }
 
+const AUTO_HIDE_STORAGE_KEY = "aiku_auto_hide_v1";
+let autoHideEnabled = (() => {
+  try {
+    return localStorage.getItem(AUTO_HIDE_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+})();
+let isAutoHiddenStrip = false;
+let autoHideTimer = null;
+
 let isIdleHovered = false;
 let currentStretchDragging = false;
 let hitBoxTrackUntil = 0;
 let hitBoxAnimId = null;
 let lastSentHitBox = "";
 
+function cancelAutoHideTimer() {
+  if (autoHideTimer) {
+    clearTimeout(autoHideTimer);
+    autoHideTimer = null;
+  }
+}
+
+function showStatusToastBanner(title, subtitle = "", variant = "info", durationMs = 1800) {
+  const toast = document.getElementById("island-toast");
+  const iconEl = document.getElementById("toast-icon");
+  const titleEl = document.getElementById("toast-title");
+  const subEl = document.getElementById("toast-sub");
+  const barEl = document.getElementById("toast-bar");
+  if (!toast) return;
+
+  toast.className = `island-toast ${variant}`;
+  if (iconEl) iconEl.innerHTML = ALERT_SVG_ICONS[variant] || ALERT_SVG_ICONS.info;
+  if (titleEl) titleEl.textContent = title;
+  if (subEl) subEl.textContent = subtitle || "Status Sistem • aiKu";
+  if (barEl) {
+    barEl.style.transition = "none";
+    barEl.style.transform = "scaleX(1)";
+    void barEl.offsetWidth;
+    barEl.style.transition = `transform ${durationMs}ms linear`;
+    barEl.style.transform = "scaleX(0)";
+  }
+
+  if (toastTimer) clearTimeout(toastTimer);
+  trackHitBoxForMs(320);
+  toastTimer = setTimeout(() => {
+    toast.classList.add("hidden");
+    trackHitBoxForMs(150);
+  }, durationMs);
+}
+
+function enterAutoHiddenStrip() {
+  cancelAutoHideTimer();
+  const wrapper = document.querySelector(".notch-wrapper");
+  const strip = document.getElementById("auto-hide-strip");
+  const island = document.getElementById("island");
+  if (!wrapper || !island) return;
+  if (island.dataset.state !== "idle" || currentStretchDragging || liveVoiceActive || activeNotifMode) return;
+
+  isAutoHiddenStrip = true;
+  isIdleHovered = false;
+  island.classList.remove("is-hovered");
+  wrapper.classList.add("auto-hidden");
+  strip?.classList.add("visible");
+  trackHitBoxForMs(360);
+}
+
+function revealFromAutoHide() {
+  cancelAutoHideTimer();
+  const wrapper = document.querySelector(".notch-wrapper");
+  const strip = document.getElementById("auto-hide-strip");
+  const wasHidden = isAutoHiddenStrip || Boolean(wrapper?.classList.contains("auto-hidden"));
+  isAutoHiddenStrip = false;
+  wrapper?.classList.remove("auto-hidden", "island-hidden");
+  strip?.classList.remove("visible");
+  if (wasHidden) {
+    trackHitBoxForMs(420);
+  }
+}
+
+function scheduleAutoHide(delayMs = 420) {
+  cancelAutoHideTimer();
+  if (!autoHideEnabled) return;
+  const island = document.getElementById("island");
+  if (!island || island.dataset.state !== "idle") return;
+  if (isIdleHovered || currentStretchDragging || liveVoiceActive || activeNotifMode || bootGreetingActive) return;
+
+  autoHideTimer = setTimeout(() => {
+    autoHideTimer = null;
+    if (!autoHideEnabled || isIdleHovered || currentStretchDragging || liveVoiceActive || activeNotifMode || bootGreetingActive) {
+      return;
+    }
+    if (document.getElementById("island")?.dataset.state === "idle") {
+      enterAutoHiddenStrip();
+    }
+  }, delayMs);
+}
+
+function syncAutoHideToggleUi() {
+  const cb = document.getElementById("ls-auto-hide");
+  if (cb) cb.checked = autoHideEnabled;
+}
+
+function setAutoHideEnabled(next, { fromHotkey = false } = {}) {
+  autoHideEnabled = Boolean(next);
+  try {
+    localStorage.setItem(AUTO_HIDE_STORAGE_KEY, autoHideEnabled ? "1" : "0");
+  } catch {}
+  syncAutoHideToggleUi();
+
+  const island = document.getElementById("island");
+  if (autoHideEnabled) {
+    if (fromHotkey) {
+      if (island && island.dataset.state !== "idle" && !liveVoiceActive) {
+        setIslandState("idle");
+      }
+      enterAutoHiddenStrip();
+      showStatusToastBanner("Auto-Hide Aktif", "Arahkan kursor ke strip tipis atas untuk membuka", "info", 1900);
+    } else {
+      showStatusToastBanner("Auto-Hide Aktif", "Dynamic Island akan melipat ke strip tipis saat idle", "info", 2000);
+      scheduleAutoHide(450);
+    }
+  } else {
+    revealFromAutoHide();
+    showStatusToastBanner("Auto-Hide Nonaktif", "Dynamic Island selalu tampil di atas", "ok", 1800);
+  }
+}
+
 function pushHitBox(draggingOverride = null) {
   if (typeof invoke !== "function") return;
   const island = document.getElementById("island");
   if (!island) return;
 
-  const rect = island.getBoundingClientRect();
   const toast = document.getElementById("island-toast");
   const hasToast = Boolean(toast && !toast.classList.contains("hidden"));
   const tRect = hasToast ? toast.getBoundingClientRect() : { left: 0, top: 0, right: 0, bottom: 0 };
 
-  // Saat elemen <select> native sedang dibuka di Settings, beri ruang ekstra ke bawah agar opsi dropdown leluasa diklik
-  const selectOpen = document.activeElement?.tagName === "SELECT" && island.dataset.state === "security";
-  const padX = selectOpen ? 20 : 1;
-  const padBottom = selectOpen ? 220 : 1;
+  let left = 0;
+  let top = 0;
+  let right = 0;
+  let bottom = 0;
 
-  const left = Math.round(rect.left - padX);
-  const top = Math.round(Math.min(0, rect.top));
-  const right = Math.round(rect.right + padX);
-  const bottom = Math.round(rect.bottom + padBottom);
+  if (isAutoHiddenStrip) {
+    const strip = document.getElementById("auto-hide-strip");
+    const sRect = strip ? strip.getBoundingClientRect() : null;
+    if (sRect && sRect.width > 10) {
+      left = Math.round(sRect.left);
+      top = 0;
+      right = Math.round(sRect.right);
+      bottom = Math.max(9, Math.round(sRect.bottom));
+    } else {
+      const cx = Math.round(window.innerWidth / 2);
+      left = cx - 74;
+      top = 0;
+      right = cx + 74;
+      bottom = 10;
+    }
+  } else {
+    const rect = island.getBoundingClientRect();
+    // Saat elemen <select> native sedang dibuka di Settings, beri ruang ekstra ke bawah agar opsi dropdown leluasa diklik
+    const selectOpen = document.activeElement?.tagName === "SELECT" && island.dataset.state === "security";
+    const padX = selectOpen ? 20 : 1;
+    const padBottom = selectOpen ? 220 : 1;
+
+    left = Math.round(rect.left - padX);
+    top = Math.round(Math.min(0, rect.top));
+    right = Math.round(rect.right + padX);
+    bottom = Math.round(rect.bottom + padBottom);
+  }
+
   const toastLeft = Math.round(tRect.left);
   const toastTop = Math.round(tRect.top);
   const toastRight = Math.round(tRect.right);
@@ -1806,15 +1955,26 @@ function trackHitBoxForMs(durationMs = 420) {
 function setIdleHovered(hovered) {
   const island = document.getElementById("island");
   if (!island) return;
+  if (hovered) {
+    revealFromAutoHide();
+  }
   if (hovered && island.dataset.state === "idle" && ledgeHub?.shouldOpenFullOnHover()) {
     setIslandState("palette");
     return;
   }
   const next = Boolean(hovered && island.dataset.state === "idle");
-  if (isIdleHovered === next && island.classList.contains("is-hovered") === next) return;
+  if (isIdleHovered === next && island.classList.contains("is-hovered") === next) {
+    if (!next && autoHideEnabled && island.dataset.state === "idle") {
+      scheduleAutoHide(420);
+    }
+    return;
+  }
   isIdleHovered = next;
   island.classList.toggle("is-hovered", next);
   trackHitBoxForMs(380);
+  if (!next && autoHideEnabled && island.dataset.state === "idle") {
+    scheduleAutoHide(420);
+  }
 }
 
 function clearActiveNotifVisuals() {
@@ -1834,7 +1994,7 @@ function setIslandState(state) {
   const wrapper = document.querySelector(".notch-wrapper");
   const island = document.getElementById("island");
   resetBalloonVisuals();
-  wrapper?.classList.remove("island-hidden");
+  revealFromAutoHide();
 
   if (state !== "active" && activeNotifMode) {
     clearActiveNotifVisuals();
@@ -1848,6 +2008,10 @@ function setIslandState(state) {
   }${state === "active" && activeNotifMode ? " is-notif" : ""}`;
   island.dataset.state = state;
   trackHitBoxForMs(420);
+
+  if (state === "idle" && autoHideEnabled && !isIdleHovered && !currentStretchDragging && !liveVoiceActive) {
+    scheduleAutoHide(450);
+  }
 
   if (state === "palette") {
     setBrowserSearchInputMode(false);
@@ -2125,10 +2289,35 @@ function initElasticJellyPhysics() {
   }
 
   function applyRubberMembraneTransform() {
+    const islandW = island.offsetWidth || 220;
+    const islandH = island.offsetHeight || 36;
+    const earBase = 14;
+    const halfBaseW = islandW / 2 + earBase;
+
+    // Pastikan hasil stretch + translate + skew tidak pernah melebihi batas kanvas window (anti-crop!)
+    const maxHalfCanvas = Math.max(halfBaseW + 8, window.innerWidth / 2 - 14);
+    const maxHeightCanvas = Math.max(islandH + 8, window.innerHeight - 14);
+
+    const effSy = Math.min(curSy, maxHeightCanvas / Math.max(1, islandH));
+    let effSx = curSx;
+    let effTx = curTx;
+    let effSkew = curSkew;
+
+    const skewShift = islandH * effSy * Math.tan((Math.abs(effSkew) * Math.PI) / 180);
+    const totalHalfReach = halfBaseW * effSx + Math.abs(effTx) + skewShift;
+    if (totalHalfReach > maxHalfCanvas) {
+      const availExtra = Math.max(0, maxHalfCanvas - halfBaseW);
+      const wantedExtra = Math.max(0.001, halfBaseW * Math.max(0, effSx - 1) + Math.abs(effTx) + skewShift);
+      const ratio = Math.min(1, availExtra / wantedExtra);
+      if (effSx > 1) effSx = 1 + (effSx - 1) * ratio;
+      effTx *= ratio;
+      effSkew *= ratio;
+    }
+
     wrapper.style.transformOrigin = "50% top";
-    // Pure 2D transform + 2px top anchor bleed: tepi atas terkunci 100% rapat di y=0 tanpa celah 1px!
+    // Pure 2D transform: tepi atas terkunci 100% rapat di y=0 tanpa celah 1px & aman dari crop samping!
     wrapper.style.transform =
-      `translateX(${curTx.toFixed(2)}px) scale(${curSx.toFixed(4)}, ${curSy.toFixed(4)}) skewX(${curSkew.toFixed(2)}deg)`;
+      `translateX(${effTx.toFixed(2)}px) scale(${effSx.toFixed(4)}, ${effSy.toFixed(4)}) skewX(${effSkew.toFixed(2)}deg)`;
 
     // Lengkungan sudut bawah elips asimetris seperti kain karet yang melar mengikuti titik tarikan
     const downPull = Math.max(0, curStretchY);
@@ -2138,24 +2327,31 @@ function initElasticJellyPhysics() {
 
     if (tension > 0.015) {
       const baseR = island.dataset.state === "idle" ? 16 : 24;
-      const lx = Math.round(baseR + downPull * 24 + leftPull * 42 - rightPull * 6);
-      const ly = Math.round(baseR + downPull * 46 + leftPull * 56 - rightPull * 4);
-      const rx = Math.round(baseR + downPull * 24 + rightPull * 42 - leftPull * 6);
-      const ry = Math.round(baseR + downPull * 46 + rightPull * 56 - leftPull * 4);
+      // Sisakan dinding vertikal lurus minimal (earBase + 2px) di atas agar telinga notch tidak pernah terpisah
+      const maxCornerY = Math.max(baseR, islandH - (earBase + 2));
+      const maxCornerX = Math.max(baseR, Math.floor(islandW * 0.35));
 
-      island.style.borderBottomLeftRadius = `${Math.max(14, lx)}px ${Math.max(14, ly)}px`;
-      island.style.borderBottomRightRadius = `${Math.max(14, rx)}px ${Math.max(14, ry)}px`;
+      const lx = Math.max(14, Math.min(maxCornerX, Math.round(baseR + downPull * 20 + leftPull * 32 - rightPull * 6)));
+      const ly = Math.max(14, Math.min(maxCornerY, Math.round(baseR + downPull * 36 + leftPull * 42 - rightPull * 4)));
+      const rx = Math.max(14, Math.min(maxCornerX, Math.round(baseR + downPull * 20 + rightPull * 32 - leftPull * 6)));
+      const ry = Math.max(14, Math.min(maxCornerY, Math.round(baseR + downPull * 36 + rightPull * 42 - leftPull * 4)));
+
+      island.style.borderBottomLeftRadius = `${lx}px ${ly}px`;
+      island.style.borderBottomRightRadius = `${rx}px ${ry}px`;
       island.style.boxShadow = `inset 0 -1.5px 0 rgba(255, 255, 255, ${(0.1 + tension * 0.18).toFixed(3)})`;
 
-      // Telinga lengkung notch atas ikut melar elastis seperti sambungan kain karet di tepi layar
+      // Telinga lengkung notch atas sudah ikut transform wrapper; batasi scale ekstra agar tidak melebihi sisi lurus
+      const maxLeftEarSy = Math.max(0.85, Math.min(1.35, (islandH - ly) / earBase));
+      const maxRightEarSy = Math.max(0.85, Math.min(1.35, (islandH - ry) / earBase));
+
       if (earLeft) {
-        const elSx = 1 + leftPull * 0.95 + downPull * 0.25;
-        const elSy = 1 + downPull * 1.25 + leftPull * 0.45;
+        const elSx = 1 + leftPull * 0.35 + downPull * 0.12;
+        const elSy = Math.min(maxLeftEarSy, 1 + downPull * 0.28 + leftPull * 0.15);
         earLeft.style.transform = `scale(${elSx.toFixed(3)}, ${elSy.toFixed(3)})`;
       }
       if (earRight) {
-        const erSx = 1 + rightPull * 0.95 + downPull * 0.25;
-        const erSy = 1 + downPull * 1.25 + rightPull * 0.45;
+        const erSx = 1 + rightPull * 0.35 + downPull * 0.12;
+        const erSy = Math.min(maxRightEarSy, 1 + downPull * 0.28 + rightPull * 0.15);
         earRight.style.transform = `scale(${erSx.toFixed(3)}, ${erSy.toFixed(3)})`;
       }
     } else {
@@ -3954,6 +4150,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
     void listen("island-cursor-enter", () => {
+      revealFromAutoHide();
       if (document.getElementById("island")?.dataset.state === "idle") {
         setIdleHovered(true);
       }
@@ -3961,11 +4158,14 @@ document.addEventListener("DOMContentLoaded", () => {
     void listen("island-cursor-leave", () => {
       setIdleHovered(false);
     });
+    void listen("island-toggle-auto-hide", () => {
+      setAutoHideEnabled(!autoHideEnabled, { fromHotkey: true });
+    });
     void listen("island-toggle-hide", () => {
-      setIdleHovered(false);
-      hideIslandSmoothly();
+      setAutoHideEnabled(!autoHideEnabled, { fromHotkey: true });
     });
     void listen("island-summon", () => {
+      revealFromAutoHide();
       setIslandState("palette");
     });
     void listen("ai-chat-chunk", (ev) => {
@@ -3982,7 +4182,27 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Hover deterministik (berfungsi baik di Tauri maupun di preview browser lokal)
   const rootIslandEl = document.getElementById("island");
+  const autoHideStripEl = document.getElementById("auto-hide-strip");
+  const autoHideToggleCb = document.getElementById("ls-auto-hide");
+
+  syncAutoHideToggleUi();
+  autoHideToggleCb?.addEventListener("change", () => {
+    setAutoHideEnabled(Boolean(autoHideToggleCb.checked), { fromHotkey: false });
+  });
+
+  autoHideStripEl?.addEventListener("mouseenter", () => {
+    revealFromAutoHide();
+    if (rootIslandEl?.dataset.state === "idle") {
+      setIdleHovered(true);
+    }
+  });
+  autoHideStripEl?.addEventListener("click", () => {
+    revealFromAutoHide();
+    setIslandState("palette");
+  });
+
   rootIslandEl?.addEventListener("mouseenter", () => {
+    revealFromAutoHide();
     if (rootIslandEl.dataset.state === "idle") {
       setIdleHovered(true);
     }

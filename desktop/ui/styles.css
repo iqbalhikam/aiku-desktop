@@ -70,13 +70,67 @@ body {
   cursor: grabbing;
 }
 
-.notch-wrapper.island-hidden {
+.notch-wrapper.island-hidden,
+.notch-wrapper.auto-hidden {
   transform: translateY(-115%);
   opacity: 0;
   pointer-events: none;
+  transition:
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease;
+}
+
+/* Thin Top Auto-Hide Trigger Strip (hanya tampil saat mode Auto-Hide melipat Dynamic Island) */
+.auto-hide-strip {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%) translateY(-100%);
+  width: 148px;
+  height: 10px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 60;
+  opacity: 0;
+  pointer-events: none;
+  cursor: pointer;
+  transition:
+    opacity 0.22s ease,
+    transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.auto-hide-strip.visible {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.auto-hide-strip-pill {
+  width: 112px;
+  height: 4px;
+  border-radius: 0 0 999px 999px;
+  background: #000000;
+  box-shadow:
+    0 1px 4px rgba(0, 0, 0, 0.45),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.28);
+  transition:
+    width 0.2s ease,
+    height 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.auto-hide-strip:hover .auto-hide-strip-pill {
+  width: 126px;
+  height: 5px;
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.55),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.45);
 }
 
 .notch-ear {
+  position: relative;
+  z-index: 0;
   flex-shrink: 0;
   display: block;
   margin-top: 0;
@@ -85,16 +139,18 @@ body {
 }
 
 .ear-left {
-  margin-right: -1px;
+  margin-right: -2px;
   transform-origin: right top;
 }
 .ear-right {
-  margin-left: -1px;
+  margin-left: -2px;
   transform-origin: left top;
 }
 
 /* Pure Jet-Black Dynamic Island Shell (Zero HWND resize flicker + Fluid Spring Morph) */
 .island {
+  position: relative;
+  z-index: 1;
   background: var(--black);
   margin-top: 0;
   padding-top: 0;
@@ -3752,23 +3808,23 @@ body[data-aiku-theme="mono"] .ls-switch input:checked + span::before {
   width: 196px;
 }
 .island.state-idle.is-hovered {
-  width: 274px;
-  border-radius: 0 0 22px 22px;
+  width: 286px;
+  border-radius: 0 0 24px 24px;
   box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.12);
 }
 .island.state-idle.is-hovered .view-idle {
-  height: 78px;
-  padding: 4px 12px 9px;
+  height: 92px;
+  padding: 5px 14px 12px;
 }
 .idle-hover-dock {
   justify-content: center;
   gap: 5px;
-  padding: 4px 5px;
-  margin-top: 2px;
+  padding: 5px 6px;
+  margin-top: 4px;
   border-top: none;
-  border-radius: 13px;
+  border-radius: 14px;
   background: #0d0d12;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.07);
 }
 .hover-shortcuts-list {
   justify-content: center;
@@ -3776,17 +3832,17 @@ body[data-aiku-theme="mono"] .ls-switch input:checked + span::before {
   flex: 0 1 auto;
 }
 .hover-sc-btn {
-  flex: 0 0 33px;
-  width: 33px;
-  min-width: 33px;
-  height: 33px;
+  flex: 0 0 32px;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
   border-radius: 9.5px;
   background: #16161d;
   border: 1px solid rgba(255, 255, 255, 0.07);
 }
 .hover-sc-btn svg {
-  width: 17px;
-  height: 17px;
+  width: 16px;
+  height: 16px;
 }
 .hover-sc-btn:hover {
   background: #22222c;
@@ -3794,8 +3850,8 @@ body[data-aiku-theme="mono"] .ls-switch input:checked + span::before {
   transform: translateY(-1.5px) scale(1.04);
 }
 .hover-shortcut-edit {
-  width: 33px;
-  height: 33px;
+  width: 32px;
+  height: 32px;
   border-radius: 9.5px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-style: solid;

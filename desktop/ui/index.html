@@ -8,10 +8,15 @@
   </head>
   <body>
     <main class="stage">
+      <!-- Thin Top Auto-Hide Trigger Strip (muncul hanya saat mode Auto-Hide aktif & idle) -->
+      <div id="auto-hide-strip" class="auto-hide-strip" title="Arahkan kursor untuk memunculkan aiku" aria-hidden="true">
+        <span class="auto-hide-strip-pill"></span>
+      </div>
+
       <div class="notch-wrapper">
-        <!-- Left Concave Top Bezel Ear -->
-        <svg class="notch-ear ear-left" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-          <path d="M14,0 L0,0 A14,14 0 0,1 14,14 Z" fill="#000000" />
+        <!-- Left Concave Top Bezel Ear (2px inner bleed agar tidak pernah renggang saat di-stretch) -->
+        <svg class="notch-ear ear-left" width="16" height="14" viewBox="0 0 16 14" aria-hidden="true">
+          <path d="M16,0 L0,0 A14,14 0 0,1 14,14 L16,14 Z" fill="#000000" />
         </svg>
 
         <!-- Dynamic Island Pure Black Shell -->
@@ -665,6 +670,14 @@
 
                 <div class="ls-row">
                   <div class="ls-row-copy">
+                    <div class="ls-row-title">Auto-hide (Strip tipis atas)</div>
+                    <div class="ls-row-sub">Lipat ke strip tipis di atas layar agar tidak menghalangi browser; arahkan kursor atau tekan Hotkey</div>
+                  </div>
+                  <label class="ls-switch"><input id="ls-auto-hide" type="checkbox" /><span></span></label>
+                </div>
+
+                <div class="ls-row">
+                  <div class="ls-row-copy">
                     <div class="ls-row-title">Open on hover</div>
                     <div class="ls-row-sub">Buka penuh otomatis saat kursor berhenti di notch</div>
                   </div>
@@ -1042,14 +1055,14 @@
 
               <div class="field-grid-3-top">
                 <div class="field-group">
-                  <label class="field-label mono" for="settings-hotkey">Hotkey (1–3 Tombol)</label>
+                  <label class="field-label mono" for="settings-hotkey">Hotkey Auto-Hide (1–3 Tombol)</label>
                   <input
                     id="settings-hotkey"
                     type="text"
                     class="hotkey-recorder mono"
                     value="Alt+Space"
                     readonly
-                    title="Klik lalu tekan 1 sampai 3 tombol kombinasi (mis. Alt+Space, F9, Ctrl+Shift+A)"
+                    title="Klik lalu tekan 1 sampai 3 tombol kombinasi untuk mengaktifkan/menonaktifkan Auto-Hide (mis. Alt+Space, F9, Ctrl+Shift+A)"
                   />
                 </div>
                 <div class="field-group">
@@ -1376,9 +1389,9 @@
           </div>
         </div>
 
-        <!-- Right Concave Top Bezel Ear -->
-        <svg class="notch-ear ear-right" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-          <path d="M0,0 L14,0 A14,14 0 0,0 0,14 Z" fill="#000000" />
+        <!-- Right Concave Top Bezel Ear (2px inner bleed agar tidak pernah renggang saat di-stretch) -->
+        <svg class="notch-ear ear-right" width="16" height="14" viewBox="0 0 16 14" aria-hidden="true">
+          <path d="M0,0 L16,0 A14,14 0 0,0 2,14 L0,14 Z" fill="#000000" />
         </svg>
       </div>
 

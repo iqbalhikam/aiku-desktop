@@ -129,8 +129,8 @@ fn attach_hwnd_to_desktop_wallpaper(target_hwnd: Hwnd) -> Result<(), String> {
     Ok(())
 }
 
-const CANVAS_WIDTH: f64 = 960.0;
-const CANVAS_HEIGHT: f64 = 620.0;
+const CANVAS_WIDTH: f64 = 1200.0;
+const CANVAS_HEIGHT: f64 = 720.0;
 
 #[derive(Clone, Copy)]
 struct HitBox {
@@ -338,8 +338,17 @@ fn resolve_project_root() -> Result<PathBuf, String> {
 }
 
 fn center_top_window(window: &tauri::WebviewWindow, width: f64, height: f64) {
-    let clamped_w = width.clamp(220.0, 1200.0);
-    let clamped_h = height.clamp(44.0, 720.0);
+    let (max_w, max_h) = if let Ok(Some(monitor)) = window.current_monitor() {
+        let scale = monitor.scale_factor();
+        (
+            (monitor.size().width as f64 / scale).min(1200.0).max(220.0),
+            (monitor.size().height as f64 / scale).min(720.0).max(44.0),
+        )
+    } else {
+        (1200.0, 720.0)
+    };
+    let clamped_w = width.clamp(220.0, max_w);
+    let clamped_h = height.clamp(44.0, max_h);
     let _ = window.set_size(LogicalSize::new(clamped_w, clamped_h));
 
     if let Ok(Some(monitor)) = window.current_monitor() {
@@ -471,14 +480,11 @@ fn spawn_island_daemon(
                         was_triggered = true;
                         if let Some(window) = app_handle.get_webview_window("main") {
                             let is_visible = window.is_visible().unwrap_or(false);
-                            if is_visible {
-                                let _ = window.emit("island-toggle-hide", ());
-                            } else {
+                            if !is_visible {
                                 center_top_window(&window, CANVAS_WIDTH, CANVAS_HEIGHT);
                                 let _ = window.show();
-                                let _ = window.set_focus();
-                                let _ = window.emit("island-summon", ());
                             }
+                            let _ = window.emit("island-toggle-auto-hide", ());
                         }
                     }
                 } else {
