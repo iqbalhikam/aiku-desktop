@@ -22,10 +22,14 @@ import { LedgeControlActionSchema, WindowsTelemetryService } from "../modules/le
 import {
   killDevPortProcess,
   listListeningDevPorts,
+  listRecordableWindows,
   mergeLocalPdfs,
+  openRecordingsFolder,
   runNetworkDiagnostics,
   runWindowsOfflineOcr,
   splitLocalPdf,
+  startNativeScreenRecord,
+  stopNativeScreenRecord,
 } from "../modules/ledge-system/power-tools.js";
 import {
   OfflineVoiceCloneEngine,
@@ -121,6 +125,10 @@ const RpcRequestSchema = z
       "pdfMerge",
       "pdfSplit",
       "quickTranslate",
+      "screenRecStart",
+      "screenRecStop",
+      "screenRecOpenFolder",
+      "screenRecListWindows",
     ]),
     params: z.record(z.unknown()).default({}),
   })
@@ -176,6 +184,23 @@ const QuickTranslateParamsSchema = z
     text: z.string().min(1).max(3000),
     targetLang: z.enum(["id", "en"]),
     style: z.enum(["natural", "formal", "casual", "concise"]).default("natural"),
+  })
+  .strict();
+
+const ScreenRecStartParamsSchema = z
+  .object({
+    fps: z.number().int().min(15).max(60).default(30),
+    height: z.number().int().min(0).max(2160).default(1080),
+    bitrate: z.number().int().min(1000000).max(25000000).default(6000000),
+    audioMode: z.enum(["mic", "system", "both", "none"]).default("mic"),
+    targetMode: z.enum(["desktop", "window"]).default("desktop"),
+    windowTitle: z.string().max(300).optional(),
+  })
+  .strict();
+
+const ScreenRecOpenFolderParamsSchema = z
+  .object({
+    filePath: z.string().max(400).optional(),
   })
   .strict();
 
@@ -1013,6 +1038,32 @@ export class AiKuRpcWorker {
           ...(onStreamChunk ? { onToken: onStreamChunk } : {}),
         });
         return { result: reply.trim(), aborted: reply.length === 0 };
+      }
+
+      case "screenRecStart": {
+        const parsed = ScreenRecStartParamsSchema.parse(params);
+        return startNativeScreenRecord({
+          fps: parsed.fps,
+          height: parsed.height,
+          bitrate: parsed.bitrate,
+          audioMode: parsed.audioMode,
+          targetMode: parsed.targetMode,
+          ...(parsed.windowTitle !== undefined ? { windowTitle: parsed.windowTitle } : {}),
+        });
+      }
+
+      case "screenRecStop": {
+        return stopNativeScreenRecord();
+      }
+
+      case "screenRecOpenFolder": {
+        const parsed = ScreenRecOpenFolderParamsSchema.parse(params);
+        return openRecordingsFolder(parsed.filePath);
+      }
+
+      case "screenRecListWindows": {
+        const windows = await listRecordableWindows();
+        return { windows };
       }
     }
   }

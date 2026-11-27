@@ -423,131 +423,123 @@
     renderDrawer();
 
     // -------------------------------------------------------------------------
-    // 2. SCREEN RECORDER PRO (FPS, RESOLUTION, BITRATE, SYSTEM + MIC AUDIO)
+    // 2. SCREEN RECORDER PRO (NATIVE 1-CLICK WINDOWS MP4 RECORDER — ZERO POPUP)
     // -------------------------------------------------------------------------
-    let mediaRecorder = null;
-    let recChunks = [];
-    let recStreams = [];
-    let recAudioCtx = null;
+    let isNativeRecording = false;
+    let lastSavedRecPath = "";
     let recStartMs = 0;
     let recTimer = null;
 
     const srBtn = document.getElementById("sr-btn-toggle");
+    const srFolderBtn = document.getElementById("sr-btn-folder");
+    const srTargetSel = document.getElementById("sr-target");
+    const srRefreshWinBtn = document.getElementById("sr-btn-refresh-win");
     const srStatus = document.getElementById("sr-status-text");
     const idleTimerPill = document.getElementById("idle-timer-pill");
 
-    function cleanupRecordingStreams() {
+    async function refreshRecordableWindows() {
+      if (!srTargetSel) return;
+      const prevVal = srTargetSel.value;
+      try {
+        const res = await bridge.rpc("screenRecListWindows");
+        const list = Array.isArray(res?.windows) ? res.windows : [];
+        srTargetSel.innerHTML = '<option value="__desktop__">Seluruh Layar (Full Screen)</option>';
+        list.forEach((w) => {
+          const opt = document.createElement("option");
+          opt.value = w.title;
+          const shortTitle = w.title.length > 56 ? `${w.title.slice(0, 56)}…` : w.title;
+          opt.textContent = `Jendela: ${w.processName} — ${shortTitle}`;
+          srTargetSel.appendChild(opt);
+        });
+        if (prevVal && Array.from(srTargetSel.options).some((o) => o.value === prevVal)) {
+          srTargetSel.value = prevVal;
+        }
+      } catch {
+        // Pertahankan pilihan Full Screen bila gagal membaca jendela
+      }
+    }
+
+    srRefreshWinBtn?.addEventListener("click", async () => {
+      await refreshRecordableWindows();
+      bridge.showToast("Daftar jendela aplikasi diperbarui.", "info");
+    });
+
+    function clearRecTimerUi() {
       if (recTimer) {
         clearInterval(recTimer);
         recTimer = null;
-      }
-      recStreams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
-      recStreams = [];
-      if (recAudioCtx) {
-        void recAudioCtx.close().catch(() => {});
-        recAudioCtx = null;
       }
       if (idleTimerPill && idleTimerPill.textContent?.startsWith("REC")) {
         idleTimerPill.classList.add("hidden");
       }
     }
 
-    function stopScreenRecording() {
-      if (mediaRecorder && mediaRecorder.state !== "inactive") {
-        mediaRecorder.stop();
-      } else {
-        cleanupRecordingStreams();
+    srFolderBtn?.addEventListener("click", async () => {
+      try {
+        await bridge.rpc("screenRecOpenFolder", lastSavedRecPath ? { filePath: lastSavedRecPath } : {});
+      } catch (err) {
+        bridge.showToast(`Gagal membuka folder rekaman: ${err}`, "err");
       }
-    }
+    });
 
     srBtn?.addEventListener("click", async () => {
-      if (mediaRecorder && mediaRecorder.state === "recording") {
-        stopScreenRecording();
+      if (isNativeRecording) {
+        srBtn.disabled = true;
+        srBtn.textContent = "Menyimpan MP4...";
+        try {
+          const res = await bridge.rpc("screenRecStop");
+          isNativeRecording = false;
+          clearRecTimerUi();
+          srBtn.textContent = "Mulai Rekam Layar";
+          if (res?.saved) {
+            lastSavedRecPath = res.filePath || "";
+            if (srStatus) srStatus.textContent = `Tersimpan: ${res.fileName} (${formatSize(res.sizeBytes || 0)})`;
+            bridge.showToast(`Rekaman MP4 tersimpan (${formatSize(res.sizeBytes || 0)})!`, "ok");
+          } else {
+            if (srStatus) srStatus.textContent = "Rekaman dihentikan.";
+          }
+        } catch (err) {
+          isNativeRecording = false;
+          clearRecTimerUi();
+          srBtn.textContent = "Mulai Rekam Layar";
+          bridge.showToast(`Gagal menyimpan rekaman: ${err}`, "err");
+        } finally {
+          srBtn.disabled = false;
+        }
         return;
       }
 
       const fps = Number(document.getElementById("sr-fps")?.value) || 30;
-      const resH = Number(document.getElementById("sr-res")?.value) || 0;
+      const height = Number(document.getElementById("sr-res")?.value) || 0;
       const bitrate = Number(document.getElementById("sr-bitrate")?.value) || 6000000;
-      const audioMode = document.getElementById("sr-audio")?.value || "system";
+      const audioMode = document.getElementById("sr-audio")?.value || "mic";
+      const targetVal = srTargetSel?.value || "__desktop__";
+      const targetMode = targetVal === "__desktop__" ? "desktop" : "window";
 
+      srBtn.disabled = true;
+      srBtn.textContent = "Memulai...";
       try {
-        const videoConstraints = {
-          frameRate: { ideal: fps, max: fps },
-          ...(resH > 0 ? { height: { ideal: resH, max: resH } } : {}),
-        };
-        const displayStream = await navigator.mediaDevices.getDisplayMedia({
-          video: videoConstraints,
-          audio: audioMode !== "none",
+        const res = await bridge.rpc("screenRecStart", {
+          fps,
+          height,
+          bitrate,
+          audioMode,
+          targetMode,
+          ...(targetMode === "window" ? { windowTitle: targetVal } : {}),
         });
-        recStreams.push(displayStream);
-
-        let finalStream = displayStream;
-        if (audioMode === "both") {
-          try {
-            const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-            recStreams.push(micStream);
-            const AudioCtx = window.AudioContext || window.webkitAudioContext;
-            recAudioCtx = new AudioCtx();
-            const dest = recAudioCtx.createMediaStreamDestination();
-            if (displayStream.getAudioTracks().length > 0) {
-              recAudioCtx.createMediaStreamSource(displayStream).connect(dest);
-            }
-            if (micStream.getAudioTracks().length > 0) {
-              recAudioCtx.createMediaStreamSource(micStream).connect(dest);
-            }
-            finalStream = new MediaStream([
-              ...displayStream.getVideoTracks(),
-              ...dest.stream.getAudioTracks(),
-            ]);
-          } catch {
-            // Fallback ke audio sistem saja bila mic ditolak
-          }
-        }
-
-        const mimeCandidates = [
-          "video/webm;codecs=vp9,opus",
-          "video/webm;codecs=vp8,opus",
-          "video/webm",
-        ];
-        const chosenMime = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "";
-
-        recChunks = [];
-        mediaRecorder = new MediaRecorder(finalStream, {
-          ...(chosenMime ? { mimeType: chosenMime } : {}),
-          videoBitsPerSecond: bitrate,
-        });
-
-        mediaRecorder.ondataavailable = (ev) => {
-          if (ev.data && ev.data.size > 0) recChunks.push(ev.data);
-        };
-
-        mediaRecorder.onstop = () => {
-          cleanupRecordingStreams();
-          if (srBtn) srBtn.textContent = "Mulai Rekam Layar";
-          if (recChunks.length > 0) {
-            const blob = new Blob(recChunks, { type: chosenMime || "video/webm" });
-            const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-            const fname = `aiku-record-${stamp}-${fps}fps.webm`;
-            triggerDownloadBlob(blob, fname);
-            if (srStatus) srStatus.textContent = `Tersimpan: ${fname} (${formatSize(blob.size)})`;
-            bridge.showToast(`Rekaman disimpan (${formatSize(blob.size)})!`, "ok");
-          }
-          mediaRecorder = null;
-        };
-
-        displayStream.getVideoTracks()[0]?.addEventListener("ended", () => {
-          stopScreenRecording();
-        });
-
-        mediaRecorder.start(500);
+        isNativeRecording = Boolean(res?.recording);
+        lastSavedRecPath = res?.filePath || "";
         recStartMs = Date.now();
-        if (srBtn) srBtn.textContent = "Hentikan & Simpan";
+        srBtn.textContent = "Hentikan & Simpan";
+        const audioTag = res?.audioAttached ? " • Mic" : "";
+
         const updateRecElapsed = () => {
           const sec = Math.floor((Date.now() - recStartMs) / 1000);
           const mm = String(Math.floor(sec / 60)).padStart(2, "0");
           const ss = String(sec % 60).padStart(2, "0");
-          if (srStatus) srStatus.textContent = `Merekam (${fps}fps • ${(bitrate / 1e6).toFixed(1)}Mbps) — ${mm}:${ss}`;
+          if (srStatus) {
+            srStatus.textContent = `Merekam MP4 (${fps}fps • ${(bitrate / 1e6).toFixed(1)}Mbps${audioTag}) — ${mm}:${ss}`;
+          }
           if (idleTimerPill) {
             idleTimerPill.classList.remove("hidden");
             idleTimerPill.textContent = `REC ${mm}:${ss}`;
@@ -555,11 +547,16 @@
         };
         updateRecElapsed();
         recTimer = setInterval(updateRecElapsed, 1000);
-        // Kecilkan ke Idle Pill agar layar leluasa direkam!
+        bridge.showToast("Rekaman layar dimulai! Klik lagi di Dynamic Island untuk stop.", "ok");
         bridge.setIslandState("idle");
       } catch (err) {
-        cleanupRecordingStreams();
-        if (srStatus) srStatus.textContent = "Rekaman dibatalkan.";
+        isNativeRecording = false;
+        clearRecTimerUi();
+        srBtn.textContent = "Mulai Rekam Layar";
+        if (srStatus) srStatus.textContent = `Gagal merekam: ${err}`;
+        bridge.showToast(`Gagal memulai rekaman: ${err}`, "err");
+      } finally {
+        srBtn.disabled = false;
       }
     });
 
@@ -1119,6 +1116,7 @@
     window.aikuOnSubtoolOpened = (tabId) => {
       if (tabId === "ports") void refreshPorts();
       else if (tabId === "net-diag") void runNetDiag();
+      else if (tabId === "screen-rec") void refreshRecordableWindows();
       else if (tabId === "all-features") renderDrawer();
     };
   }

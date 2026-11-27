@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import dns from "node:dns";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -366,4 +367,310 @@ export async function splitLocalPdf(
     extractedPages: outDoc.getPageCount(),
     originalPages: total,
   };
+}
+
+/**
+ * 5. Native Windows 1-Click Screen Recorder (ffmpeg gdigrab -> H.264 MP4)
+ * Bebas popup browser "Choose what to share" & kompatibel penuh dengan Tauri click-through!
+ */
+interface ActiveNativeRecording {
+  proc: ChildProcess;
+  filePath: string;
+  startedAtMs: number;
+  fps: number;
+  bitrate: number;
+  audioAttached: boolean;
+  lastStderr: string;
+}
+
+let activeNativeRec: ActiveNativeRecording | null = null;
+
+function resolveFfmpegExecutable(): string | null {
+  if (process.platform !== "win32") return "ffmpeg";
+  const localAppData = process.env["LOCALAPPDATA"] ?? "";
+  const candidates = [
+    path.join(localAppData, "Microsoft", "WinGet", "Links", "ffmpeg.exe"),
+    "C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe",
+    "C:\\ffmpeg\\bin\\ffmpeg.exe",
+  ];
+  for (const c of candidates) {
+    if (c && fsSync.existsSync(c)) return c;
+  }
+  return "ffmpeg";
+}
+
+function detectFirstDirectShowAudioDevice(ffmpegBin: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn(ffmpegBin, ["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"], {
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {}
+      resolve(null);
+    }, 2500);
+    child.stderr.on("data", (d: Buffer) => {
+      stderr += d.toString("utf8");
+    });
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      const match = stderr.match(/"([^"]+)"\s*\(audio\)/i);
+      resolve(match?.[1]?.trim() || null);
+    });
+  });
+}
+
+export interface RecordableWindow {
+  title: string;
+  processName: string;
+}
+
+export async function listRecordableWindows(): Promise<RecordableWindow[]> {
+  if (process.platform !== "win32") return [];
+  const ps = `
+$ErrorActionPreference='SilentlyContinue'
+$items = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and -not [string]::IsNullOrWhiteSpace($_.MainWindowTitle) } |
+  Select-Object @{N='processName';E={$_.ProcessName}}, @{N='title';E={$_.MainWindowTitle}}
+if ($null -eq $items) { '[]' } else { @($items) | ConvertTo-Json -Compress }
+`.trim();
+  try {
+    const raw = await execPowerShellSafe(ps, 3500);
+    const parsed = JSON.parse(raw || "[]") as unknown;
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    const seen = new Set<string>();
+    const out: RecordableWindow[] = [];
+    for (const row of arr) {
+      if (!row || typeof row !== "object") continue;
+      const r = row as Record<string, unknown>;
+      const title = String(r["title"] ?? "").trim();
+      const processName = String(r["processName"] ?? "").trim();
+      if (!title || /^aiku/i.test(title) || seen.has(title)) continue;
+      seen.add(title);
+      out.push({ title, processName });
+    }
+    return out.slice(0, 30);
+  } catch {
+    return [];
+  }
+}
+
+export async function startNativeScreenRecord(opts: {
+  fps: number;
+  height: number;
+  bitrate: number;
+  audioMode: "mic" | "system" | "both" | "none";
+  targetMode?: "desktop" | "window";
+  windowTitle?: string;
+}): Promise<{
+  recording: boolean;
+  filePath: string;
+  fileName: string;
+  audioAttached: boolean;
+}> {
+  if (activeNativeRec !== null) {
+    return {
+      recording: true,
+      filePath: activeNativeRec.filePath,
+      fileName: path.basename(activeNativeRec.filePath),
+      audioAttached: activeNativeRec.audioAttached,
+    };
+  }
+
+  const ffmpegBin = resolveFfmpegExecutable();
+  if (!ffmpegBin) {
+    throw new Error("ffmpeg tidak ditemukan. Instal via terminal: winget install Gyan.FFmpeg");
+  }
+
+  const outDir = path.join(os.homedir(), "Videos", "aiku-recordings");
+  await fs.mkdir(outDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const fps = Math.min(60, Math.max(15, Math.round(opts.fps || 30)));
+  const bitrate = Math.min(25_000_000, Math.max(1_000_000, Math.round(opts.bitrate || 6_000_000)));
+  const height = Math.max(0, Math.round(opts.height || 0));
+  const fileName = `aiku-rec-${stamp}-${fps}fps.mp4`;
+  const filePath = path.join(outDir, fileName);
+
+  const audioDevice =
+    opts.audioMode !== "none" ? await detectFirstDirectShowAudioDevice(ffmpegBin) : null;
+
+  const captureInput =
+    opts.targetMode === "window" && opts.windowTitle?.trim()
+      ? `title=${opts.windowTitle.trim()}`
+      : "desktop";
+
+  const args: string[] = [
+    "-y",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-f",
+    "gdigrab",
+    "-framerate",
+    String(fps),
+    "-draw_mouse",
+    "1",
+    "-i",
+    captureInput,
+  ];
+
+  if (audioDevice) {
+    args.push("-f", "dshow", "-i", `audio=${audioDevice}`);
+  }
+
+  const vf =
+    height > 0
+      ? `scale=-2:${height}:flags=fast_bilinear`
+      : "scale=trunc(iw/2)*2:trunc(ih/2)*2";
+
+  args.push(
+    "-vf",
+    vf,
+    "-c:v",
+    "libx264",
+    "-preset",
+    "ultrafast",
+    "-tune",
+    "zerolatency",
+    "-pix_fmt",
+    "yuv420p",
+    "-b:v",
+    String(bitrate),
+    "-maxrate",
+    String(bitrate),
+    "-bufsize",
+    String(bitrate * 2)
+  );
+
+  if (audioDevice) {
+    args.push("-c:a", "aac", "-b:a", "128k");
+  }
+
+  args.push("-movflags", "+faststart", filePath);
+
+  const proc = spawn(ffmpegBin, args, {
+    shell: false,
+    windowsHide: true,
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+
+  const recState: ActiveNativeRecording = {
+    proc,
+    filePath,
+    startedAtMs: Date.now(),
+    fps,
+    bitrate,
+    audioAttached: Boolean(audioDevice),
+    lastStderr: "",
+  };
+  activeNativeRec = recState;
+
+  proc.stderr?.on("data", (buf: Buffer) => {
+    recState.lastStderr = (recState.lastStderr + buf.toString("utf8")).slice(-800);
+  });
+
+  let earlyExitError: string | null = null;
+  proc.once("error", (err) => {
+    earlyExitError = err.message;
+    if (activeNativeRec === recState) activeNativeRec = null;
+  });
+  proc.once("exit", (code) => {
+    if (code !== 0 && code !== null && !earlyExitError) {
+      earlyExitError = recState.lastStderr.trim() || `ffmpeg keluar dengan kode ${code}`;
+    }
+    if (activeNativeRec === recState) activeNativeRec = null;
+  });
+
+  // Tunggu 450ms untuk memastikan ffmpeg benar-benar berhasil menangkap layar
+  await new Promise((r) => setTimeout(r, 450));
+  if (earlyExitError) {
+    throw new Error(`Gagal memulai perekaman layar: ${earlyExitError}`);
+  }
+
+  return {
+    recording: true,
+    filePath,
+    fileName,
+    audioAttached: recState.audioAttached,
+  };
+}
+
+export async function stopNativeScreenRecord(): Promise<{
+  saved: boolean;
+  filePath: string;
+  fileName: string;
+  sizeBytes: number;
+}> {
+  const rec = activeNativeRec;
+  if (!rec) {
+    return { saved: false, filePath: "", fileName: "", sizeBytes: 0 };
+  }
+  activeNativeRec = null;
+
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    const killTimer = setTimeout(() => {
+      try {
+        rec.proc.kill();
+      } catch {}
+      finish();
+    }, 4500);
+
+    rec.proc.once("exit", () => {
+      clearTimeout(killTimer);
+      finish();
+    });
+
+    try {
+      rec.proc.stdin?.write("q\n");
+      rec.proc.stdin?.end();
+    } catch {
+      try {
+        rec.proc.kill();
+      } catch {}
+    }
+  });
+
+  let sizeBytes = 0;
+  try {
+    const st = await fs.stat(rec.filePath);
+    sizeBytes = st.size;
+  } catch {
+    sizeBytes = 0;
+  }
+
+  return {
+    saved: sizeBytes > 0,
+    filePath: rec.filePath,
+    fileName: path.basename(rec.filePath),
+    sizeBytes,
+  };
+}
+
+export async function openRecordingsFolder(filePath?: string): Promise<{ opened: boolean }> {
+  const outDir = path.join(os.homedir(), "Videos", "aiku-recordings");
+  await fs.mkdir(outDir, { recursive: true });
+  const target = filePath && fsSync.existsSync(filePath) ? filePath : outDir;
+  if (process.platform === "win32") {
+    const args = target === filePath ? [`/select,${target}`] : [target];
+    const child = spawn("explorer.exe", args, {
+      shell: false,
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+  }
+  return { opened: true };
 }
