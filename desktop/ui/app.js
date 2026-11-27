@@ -4450,10 +4450,10 @@ document.addEventListener("DOMContentLoaded", () => {
     else window.close();
   });
 
-  document.getElementById("chip-organize").addEventListener("click", () => void runQuickOrganize());
-  document.getElementById("chip-clipboard").addEventListener("click", () => void runSummarizeClipboard());
-  document.getElementById("chip-hygiene").addEventListener("click", () => void runQuickHygiene());
-  document.getElementById("chip-format-pdf").addEventListener("click", () => void runFormatPdfClipboard());
+  document.getElementById("chip-organize")?.addEventListener("click", () => void runQuickOrganize());
+  document.getElementById("chip-clipboard")?.addEventListener("click", () => void runSummarizeClipboard());
+  document.getElementById("chip-hygiene")?.addEventListener("click", () => void runQuickHygiene());
+  document.getElementById("chip-format-pdf")?.addEventListener("click", () => void runFormatPdfClipboard());
   document.getElementById("chip-extract-todo")?.addEventListener("click", () => void runExtractTodoClipboard());
   document.getElementById("chip-pomodoro")?.addEventListener("click", () => {
     if (timerRemainingSec > 0) {
